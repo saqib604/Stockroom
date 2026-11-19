@@ -1,0 +1,91 @@
+import { useMemo, useState } from 'react'
+import { Archive, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleDollarSign, ClipboardList, Download, LayoutDashboard, PackagePlus, Plus, Search, Settings, ShoppingCart, Users, X } from 'lucide-react'
+import './App.css'
+
+type Section = 'Overview' | 'Products' | 'Inventory' | 'Sales' | 'Customers' | 'Reports' | 'Settings'
+type Product = { id: string; name: string; sku: string; category: string; price: number; stock: number }
+const initialProducts: Product[] = [
+  { id: 'P-1042', name: 'Ceramic Pour-over Set', sku: 'KIT-PO-04', category: 'Kitchen', price: 42, stock: 18 },
+  { id: 'P-1041', name: 'Linen Market Tote', sku: 'BAG-LN-02', category: 'Accessories', price: 28, stock: 7 },
+  { id: 'P-1039', name: 'Stoneware Mug · Ochre', sku: 'MUG-ST-11', category: 'Kitchen', price: 24, stock: 32 },
+  { id: 'P-1037', name: 'Cedar Candle · 8 oz', sku: 'HOM-CD-08', category: 'Home', price: 19, stock: 0 },
+  { id: 'P-1034', name: 'Woven Table Runner', sku: 'TXT-WV-06', category: 'Home', price: 36, stock: 5 },
+]
+const sections: { name: Section; icon: typeof LayoutDashboard }[] = [
+  { name: 'Overview', icon: LayoutDashboard }, { name: 'Products', icon: Archive }, { name: 'Inventory', icon: Boxes },
+  { name: 'Sales', icon: ShoppingCart }, { name: 'Customers', icon: Users }, { name: 'Reports', icon: ChartNoAxesCombined },
+]
+const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
+
+function App() {
+  const [section, setSection] = useState<Section>('Overview')
+  const [products, setProducts] = useState(initialProducts)
+  const [query, setQuery] = useState('')
+  const [showForm, setShowForm] = useState(false)
+  const [cart, setCart] = useState<Record<string, number>>({})
+  const [notice, setNotice] = useState('')
+  const matches = useMemo(() => products.filter((p) => `${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(query.toLowerCase())), [products, query])
+  const count = Object.values(cart).reduce((sum, itemCount) => sum + itemCount, 0)
+  const total = products.reduce((sum, p) => sum + p.price * (cart[p.id] ?? 0), 0)
+  const alert = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 2500) }
+  const exportCsv = () => {
+    const csv = [['SKU', 'Product', 'Category', 'Price', 'Stock'], ...products.map((p) => [p.sku, p.name, p.category, String(p.price), String(p.stock)])].map((row) => row.map((field) => `"${field.replaceAll('"', '""')}"`).join(',')).join('\n')
+    const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); anchor.download = 'stockroom-products.csv'; anchor.click(); URL.revokeObjectURL(anchor.href); alert('Product export downloaded')
+  }
+  const addProduct = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); const data = new FormData(event.currentTarget)
+    const name = String(data.get('name') ?? '').trim(); const sku = String(data.get('sku') ?? '').trim(); const price = Number(data.get('price')); const stock = Number(data.get('stock'))
+    if (!name || !sku || !Number.isFinite(price) || !Number.isFinite(stock)) return
+    setProducts((current) => [{ id: `P-${Date.now().toString().slice(-4)}`, name, sku, category: String(data.get('category') || 'General'), price, stock }, ...current]); setShowForm(false); alert('Product added to catalog')
+  }
+  const checkout = () => {
+    if (!count) return
+    setProducts((current) => current.map((p) => ({ ...p, stock: Math.max(0, p.stock - (cart[p.id] ?? 0)) }))); setCart({}); alert(`Sale completed · ${money.format(total)}`)
+  }
+  const isProducts = section === 'Products' || section === 'Inventory' || section === 'Sales'
+  const heading = section === 'Overview' ? 'Good morning, Alex' : section
+
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <button className="brand" onClick={() => setSection('Overview')}><span className="brand-mark">s</span><span>stockroom<span className="brand-dot">.</span></span></button>
+      <button className="store-switcher"><span className="store-avatar">M</span><span className="store-meta"><strong>Mercantile & Moss</strong><small>Downtown store</small></span><ChevronDown size={15} /></button>
+      <div className="nav-label">WORKSPACE</div><nav>{sections.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${section === name ? 'active' : ''}`} onClick={() => setSection(name)}><Icon size={18} /><span>{name}</span>{name === 'Inventory' && <span className="nav-count">3</span>}</button>)}</nav>
+      <div className="nav-label preferences-label">PREFERENCES</div><button className={`nav-item ${section === 'Settings' ? 'active' : ''}`} onClick={() => setSection('Settings')}><Settings size={18} /><span>Settings</span></button>
+      <div className="sidebar-spacer" /><div className="help-box"><span className="help-mark">?</span><span><strong>Need a hand?</strong><small>Visit the help center</small></span><ArrowUpRight size={15} /></div>
+      <button className="profile-row" onClick={() => alert('Signed in as Alex Morgan')}><span className="profile-avatar">AM</span><span className="store-meta"><strong>Alex Morgan</strong><small>Store owner</small></span><span>•••</span></button>
+    </aside>
+    <main className="main-area">
+      <header className="topbar"><div className="breadcrumb">Store <span>/</span> <strong>{section}</strong></div><div className="topbar-actions"><label className="global-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search products..." aria-label="Search products" /><kbd>⌘ K</kbd></label><button className="icon-button" aria-label="Notifications" onClick={() => alert('You’re all caught up')}><Bell size={18} /><i /></button><span className="topbar-date">Thursday, June 12</span></div></header>
+      <div className="page-content">
+        <div className="page-heading"><div><div className="eyebrow">THURSDAY, JUNE 12, 2025 <i /></div><h1>{heading}</h1><p>{section === 'Overview' ? 'Here’s what’s happening at your store today.' : `${section} activity and store records.`}</p></div><div className="heading-actions"><button className="button button-secondary" onClick={exportCsv}><Download size={16} /> Export</button><button className="button button-primary" onClick={() => section === 'Sales' ? setCart((current) => ({ ...current, [products[0].id]: (current[products[0].id] ?? 0) + 1 })) : setShowForm(true)}><Plus size={17} />{section === 'Sales' ? 'Add item' : 'New product'}</button></div></div>
+        {section === 'Overview' && <>
+          <section className="metric-grid"><Metric label="Gross sales" value="$2,840.50" trend="12.8%" icon={<CircleDollarSign size={17} />} /><Metric label="Orders" value="48" trend="8.2%" icon={<ClipboardList size={17} />} /><Metric label="Items sold" value="126" trend="4.6%" icon={<Boxes size={17} />} /><Metric label="Average order" value="$59.18" trend="2.1%" icon={<ChartNoAxesCombined size={17} />} /></section>
+          <section className="overview-grid"><div className="panel sales-panel"><div className="panel-heading"><div><h2>Sales overview</h2><p>Revenue performance for the past week</p></div><button className="select-button" onClick={() => alert('Showing the last 7 days')}>Last 7 days <ChevronDown size={14} /></button></div><div className="chart-legend"><span><i className="legend-current" />This week</span><span><i className="legend-previous" />Last week</span><strong>$2,840.50 <small>+12.8%</small></strong></div><div className="chart-area"><div className="chart-y-labels"><span>$1k</span><span>$750</span><span>$500</span><span>$250</span><span>$0</span></div><div className="chart-plot"><div className="chart-grid-lines"><i /><i /><i /><i /><i /></div><div className="bar-chart">{[42, 64, 51, 79, 58, 90, 68].map((height, index) => <div className="bar-group" key={index}><span className="bar last-week" style={{ height: `${height * .67}%` }} /><span className="bar this-week" style={{ height: `${height}%` }} /></div>)}</div><div className="chart-x-labels">{['Fri', 'Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu'].map((day) => <span key={day}>{day}</span>)}</div></div></div></div>
+            <div className="panel inventory-panel"><div className="panel-heading"><div><h2>Stock health</h2><p>Current inventory status</p></div><button className="more-button" onClick={() => setSection('Inventory')}>•••</button></div><div className="stock-summary"><div className="stock-ring"><div><strong>248</strong><span>total items</span></div></div><div className="stock-legend"><div><i className="stock-good" />Healthy <strong>213</strong></div><div><i className="stock-low" />Low stock <strong>28</strong></div><div><i className="stock-out" />Out of stock <strong>7</strong></div></div></div><button className="text-link" onClick={() => setSection('Inventory')}>Review inventory <ArrowUpRight size={14} /></button></div></section>
+          <section className="panel product-panel"><div className="panel-heading"><div><h2>Products to watch</h2><p>Items that may need your attention</p></div><button className="text-link" onClick={() => setSection('Inventory')}>View all inventory <ArrowUpRight size={14} /></button></div><ProductTable products={matches.filter((p) => p.stock <= 8).slice(0, 4)} onRestock={(id) => setProducts((current) => current.map((p) => p.id === id ? { ...p, stock: p.stock + 10 } : p))} /></section>
+          <section className="bottom-grid"><div className="panel activity-panel"><div className="panel-heading"><div><h2>Recent activity</h2><p>Latest updates from your store</p></div></div><Activity initials="JS" name="Jamie Sullivan" action="purchased 2 items" time="8 min ago" amount="$84.00" /><Activity initials="IN" name="Inventory updated" action="Linen Market Tote · +12 units" time="42 min ago" amount="" /><Activity initials="CR" name="Chris Rivera" action="purchased 1 item" time="1 hr ago" amount="$42.00" /></div><div className="panel quick-panel"><div className="panel-heading"><div><h2>Quick actions</h2><p>Get things done faster</p></div></div><button className="quick-action" onClick={() => setSection('Sales')}><ShoppingCart size={18} /><span><strong>New sale</strong><small>Ring up a customer</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={() => setShowForm(true)}><PackagePlus size={18} /><span><strong>Add product</strong><small>Grow your catalog</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={exportCsv}><Download size={18} /><span><strong>Export data</strong><small>Download as CSV</small></span><ArrowUpRight size={15} /></button></div></section>
+        </>}
+        {isProducts && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><div className="table-filters"><button className="filter-chip selected">All items <span>{products.length}</span></button><button className="filter-chip" onClick={() => setQuery('')}>Active</button><button className="filter-chip" onClick={() => setProducts((current) => [...current].sort((a, b) => a.stock - b.stock))}>Stock level <ChevronDown size={14} /></button></div><button className="button button-secondary compact" onClick={exportCsv}><Download size={15} /> Export CSV</button></div><ProductTable products={matches} actionLabel={section === 'Sales' ? 'Add to cart' : 'Add 10 units'} onRestock={(id) => {
+          if (section === 'Sales') {
+            const product = products.find((item) => item.id === id)
+            if (!product || (cart[id] ?? 0) >= product.stock) { alert('No more stock available for this item'); return }
+            setCart((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }))
+            return
+          }
+          setProducts((current) => current.map((p) => p.id === id ? { ...p, stock: p.stock + 10 } : p))
+        }} /><div className="table-footer"><span>Showing <strong>{matches.length}</strong> of <strong>{products.length}</strong> products</span><button disabled>Previous　 1　 Next</button></div>{section === 'Sales' && <div className="checkout-bar"><span><strong>{count} items</strong>　{money.format(total)} total</span><button className="button button-primary" disabled={!count} onClick={checkout}>Charge {money.format(total)} <ArrowUpRight size={15} /></button></div>}</section>}
+        {section === 'Customers' && <section className="panel placeholder-panel"><Users size={24} /><h2>Customer book</h2><p>Manage customer profiles and purchase history.</p><button className="button button-primary" onClick={() => alert('Customer setup is ready')}><Plus size={16} /> Add customer</button></section>}
+        {section === 'Reports' && <section className="report-grid"><Report label="Net sales this month" value="$18,425.80" trend="9.4% from last month" icon={<ChartNoAxesCombined size={18} />} /><Report label="Sell-through rate" value="68.2%" trend="3.1% from last month" icon={<Boxes size={18} />} /><Report label="Returning customers" value="34.6%" trend="1.2% from last month" icon={<Users size={18} />} down /><div className="panel report-note"><h2>Report exports</h2><p>Download your product catalog in spreadsheet-friendly CSV format.</p><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export product report</button></div></section>}
+        {section === 'Settings' && <section className="panel settings-panel"><div className="panel-heading"><div><h2>Store profile</h2><p>Business details used across receipts and reports.</p></div><button className="button button-primary" onClick={() => alert('Store settings saved')}>Save changes</button></div><label>Store name<input defaultValue="Mercantile & Moss" /></label><div className="settings-row"><label>Currency<select defaultValue="USD"><option>USD · US Dollar</option><option>EUR · Euro</option><option>GBP · Pound Sterling</option></select></label><label>Time zone<select defaultValue="Eastern Time"><option>Eastern Time</option><option>Central Time</option><option>Pacific Time</option></select></label></div><hr /><div className="panel-heading"><div><h2>Data & exports</h2><p>Keep a local copy of your product data.</p></div><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export CSV</button></div></section>}
+      </div>
+      <footer className="app-footer"><span>© 2025 Stockroom, Inc.</span><span><i /> All systems operational</span><span>Version 1.0.0</span></footer>
+    </main>
+    {showForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowForm(false) }}><form className="product-modal" onSubmit={addProduct}><div className="modal-heading"><div><span className="eyebrow">CATALOG</span><h2>Add a product</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setShowForm(false)}><X size={18} /></button></div><label>Product name<input name="name" placeholder="Cotton canvas apron" autoFocus required /></label><div className="modal-row"><label>SKU<input name="sku" placeholder="APR-CT-01" required /></label><label>Category<input name="category" placeholder="Home" /></label></div><div className="modal-row"><label>Price<input name="price" type="number" min="0" step="0.01" required /></label><label>Opening stock<input name="stock" type="number" min="0" required /></label></div><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="button button-primary"><Plus size={16} /> Add product</button></div></form></div>}
+    {notice && <div className="toast"><span>✓</span>{notice}</div>}
+  </div>
+}
+function Metric({ label, value, trend, icon }: { label: string; value: string; trend: string; icon: React.ReactNode }) { return <article className="metric-card"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong className="metric-value">{value}</strong><div className="metric-foot"><span className="trend"><ArrowUpRight size={13} /> {trend}</span><span>vs. last Thursday</span></div></article> }
+function ProductTable({ products, onRestock, actionLabel = 'Add 10 units' }: { products: Product[]; onRestock: (id: string) => void; actionLabel?: string }) { return <div className="table-scroll"><table className="product-table"><thead><tr><th>PRODUCT</th><th>SKU</th><th>CATEGORY</th><th>PRICE</th><th>IN STOCK</th><th>STATUS</th><th /></tr></thead><tbody>{products.map((p) => <tr key={p.id}><td><div className="product-name-cell"><span className="product-swatch">{p.name.slice(0, 1)}</span><div><strong>{p.name}</strong><small>{p.id}</small></div></div></td><td className="sku-cell">{p.sku}</td><td>{p.category}</td><td className="price-cell">{money.format(p.price)}</td><td>{p.stock} units</td><td><span className={`status-pill ${p.stock === 0 ? 'out-of-stock' : p.stock <= 8 ? 'low-stock' : 'in-stock'}`}><i />{p.stock === 0 ? 'Out of stock' : p.stock <= 8 ? 'Low stock' : 'In stock'}</span></td><td><button className="row-action" title={actionLabel} aria-label={`${actionLabel}: ${p.name}`} disabled={actionLabel === 'Add to cart' && p.stock === 0} onClick={() => onRestock(p.id)}><Plus size={15} /></button></td></tr>)}</tbody></table>{products.length === 0 && <div className="empty-state"><Search size={19} />No products match your search.</div>}</div> }
+function Activity({ initials, name, action, time, amount }: { initials: string; name: string; action: string; time: string; amount: string }) { return <div className="activity-row"><span className="activity-avatar">{initials}</span><div className="activity-copy"><strong>{name}</strong><span>{action}</span></div><time>{time}</time><strong className="activity-amount">{amount}</strong></div> }
+function Report({ label, value, trend, icon, down = false }: { label: string; value: string; trend: string; icon: React.ReactNode; down?: boolean }) { return <div className="panel report-card"><span className="metric-icon">{icon}</span><span>{label}</span><strong>{value}</strong><small>{down ? <ArrowDownRight size={13} /> : <ArrowUpRight size={13} />} {trend}</small></div> }
+export default App

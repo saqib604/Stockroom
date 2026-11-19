@@ -1,0 +1,351 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum SaleStatus {
+  completed
+  voided
+  refunded
+}
+
+enum PaymentMethod {
+  cash
+  card
+  gift_card
+  store_credit
+  other
+}
+
+enum MovementType {
+  opening
+  sale
+  restock
+  adjustment
+  return
+  void
+}
+
+enum ExportType {
+  products
+  sales
+  customers
+  inventory
+}
+
+enum ExportStatus {
+  queued
+  completed
+  failed
+}
+
+model Store {
+  id          BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  name        String        @db.VarChar(160)
+  email       String?       @db.VarChar(254)
+  phone       String?       @db.VarChar(40)
+  addressLine1 String?      @map("address_line1") @db.VarChar(180)
+  addressLine2 String?      @map("address_line2") @db.VarChar(180)
+  city        String?       @db.VarChar(100)
+  region      String?       @db.VarChar(100)
+  postalCode  String?       @map("postal_code") @db.VarChar(24)
+  countryCode String        @default("US") @map("country_code") @db.Char(2)
+  currency    String        @default("USD") @db.Char(3)
+  timezone    String        @default("UTC") @db.VarChar(64)
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamp(0)
+  users       StoreUser[]
+  registers   Register[]
+  categories  Category[]
+  products    Product[]
+  inventory   Inventory[]
+  customers   Customer[]
+  sales       Sale[]
+  movements   InventoryMovement[]
+  auditLogs   AuditLog[]
+  settings    StoreSetting[]
+  exports     DataExport[]
+  deletedAt   DateTime?     @map("deleted_at") @db.Timestamp(0)
+
+  @@map("stores")
+}
+
+model Role {
+  id          BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  name        String        @unique @db.VarChar(60)
+  description String?       @db.VarChar(255)
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamp(0)
+  users       StoreUser[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model User {
+  id           BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  email        String        @unique @db.VarChar(254)
+  passwordHash String        @map("password_hash") @db.VarChar(255)
+  firstName    String        @map("first_name") @db.VarChar(80)
+  lastName     String        @map("last_name") @db.VarChar(80)
+  isActive     Boolean       @default(true) @map("is_active")
+  lastLoginAt  DateTime?     @map("last_login_at") @db.Timestamp(0)
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamp(0)
+  deletedAt    DateTime?     @map("deleted_at") @db.Timestamp(0)
+  storeLinks   StoreUser[]
+  sales        Sale[]
+  movements    InventoryMovement[]
+  auditLogs    AuditLog[]
+  settings     StoreSetting[]
+  exports      DataExport[]
+
+  @@map("users")
+}
+
+model StoreUser {
+  storeId BigInt @map("store_id") @db.UnsignedBigInt
+  userId  BigInt @map("user_id") @db.UnsignedBigInt
+  roleId  BigInt @map("role_id") @db.UnsignedBigInt
+  store   Store  @relation(fields: [storeId], references: [id])
+  user    User   @relation(fields: [userId], references: [id])
+  role    Role   @relation(fields: [roleId], references: [id])
+
+  @@id([storeId, userId])
+  @@map("store_users")
+}
+
+model Permission {
+  id            BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
+  permissionKey String           @unique @map("permission_key") @db.VarChar(100)
+  description   String?          @db.VarChar(255)
+  roles         RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       BigInt     @map("role_id") @db.UnsignedBigInt
+  permissionId BigInt     @map("permission_id") @db.UnsignedBigInt
+  role         Role       @relation(fields: [roleId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model Register {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId   BigInt   @map("store_id") @db.UnsignedBigInt
+  name      String   @db.VarChar(100)
+  code      String   @db.VarChar(30)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  store     Store    @relation(fields: [storeId], references: [id])
+  sales     Sale[]
+
+  @@unique([storeId, code])
+  @@map("registers")
+}
+
+model Category {
+  id        BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId   BigInt     @map("store_id") @db.UnsignedBigInt
+  parentId  BigInt?    @map("parent_id") @db.UnsignedBigInt
+  name      String     @db.VarChar(100)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt DateTime   @updatedAt @map("updated_at") @db.Timestamp(0)
+  store     Store      @relation(fields: [storeId], references: [id])
+  parent    Category? @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
+  products  Product[]
+
+  @@unique([storeId, name])
+  @@map("categories")
+}
+
+model Product {
+  id            BigInt              @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId       BigInt              @map("store_id") @db.UnsignedBigInt
+  categoryId    BigInt?             @map("category_id") @db.UnsignedBigInt
+  sku           String              @db.VarChar(80)
+  barcode       String?             @db.VarChar(100)
+  name          String              @db.VarChar(180)
+  description   String?             @db.Text
+  costPrice     Decimal             @default(0) @map("cost_price") @db.Decimal(12, 2)
+  sellingPrice  Decimal             @map("selling_price") @db.Decimal(12, 2)
+  taxRate       Decimal             @default(0) @map("tax_rate") @db.Decimal(6, 3)
+  trackInventory Boolean            @default(true) @map("track_inventory")
+  reorderLevel  Int                 @default(0) @map("reorder_level") @db.UnsignedInt
+  isActive      Boolean             @default(true) @map("is_active")
+  deletedAt     DateTime?           @map("deleted_at") @db.Timestamp(0)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamp(0)
+  store         Store               @relation(fields: [storeId], references: [id])
+  category      Category?           @relation(fields: [categoryId], references: [id])
+  inventories   Inventory[]
+  saleItems     SaleItem[]
+  movements     InventoryMovement[]
+
+  @@unique([storeId, sku])
+  @@index([storeId, name])
+  @@map("products")
+}
+
+model Inventory {
+  storeId       BigInt   @map("store_id") @db.UnsignedBigInt
+  productId     BigInt   @map("product_id") @db.UnsignedBigInt
+  quantityOnHand Int     @default(0) @map("quantity_on_hand")
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamp(0)
+  store         Store    @relation(fields: [storeId], references: [id])
+  product       Product  @relation(fields: [productId], references: [id])
+
+  @@id([storeId, productId])
+  @@map("inventory")
+}
+
+model Customer {
+  id        BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId   BigInt    @map("store_id") @db.UnsignedBigInt
+  firstName String    @map("first_name") @db.VarChar(80)
+  lastName  String    @map("last_name") @db.VarChar(80)
+  email     String?   @db.VarChar(254)
+  phone     String?   @db.VarChar(40)
+  notes     String?   @db.Text
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamp(0)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamp(0)
+  store     Store     @relation(fields: [storeId], references: [id])
+  sales     Sale[]
+
+  @@index([storeId, lastName, firstName])
+  @@map("customers")
+}
+
+model Sale {
+  id           BigInt     @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId      BigInt     @map("store_id") @db.UnsignedBigInt
+  registerId   BigInt?    @map("register_id") @db.UnsignedBigInt
+  customerId   BigInt?    @map("customer_id") @db.UnsignedBigInt
+  cashierUserId BigInt    @map("cashier_user_id") @db.UnsignedBigInt
+  receiptNumber String   @map("receipt_number") @db.VarChar(50)
+  status       SaleStatus @default(completed)
+  subtotal     Decimal    @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  taxAmount    Decimal    @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  totalAmount  Decimal    @map("total_amount") @db.Decimal(12, 2)
+  currency     String     @default("USD") @db.Char(3)
+  notes        String?    @db.VarChar(500)
+  soldAt       DateTime   @default(now()) @map("sold_at") @db.Timestamp(0)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamp(0)
+  store        Store      @relation(fields: [storeId], references: [id])
+  register     Register?  @relation(fields: [registerId], references: [id])
+  customer     Customer?  @relation(fields: [customerId], references: [id])
+  cashier      User       @relation(fields: [cashierUserId], references: [id])
+  items        SaleItem[]
+  payments     Payment[]
+  movements    InventoryMovement[]
+
+  @@unique([storeId, receiptNumber])
+  @@index([storeId, soldAt])
+  @@map("sales")
+}
+
+model SaleItem {
+  id             BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  saleId         BigInt   @map("sale_id") @db.UnsignedBigInt
+  productId      BigInt?  @map("product_id") @db.UnsignedBigInt
+  skuSnapshot    String   @map("sku_snapshot") @db.VarChar(80)
+  nameSnapshot   String   @map("name_snapshot") @db.VarChar(180)
+  quantity       Int      @db.UnsignedInt
+  unitPrice      Decimal  @map("unit_price") @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  taxRate        Decimal  @default(0) @map("tax_rate") @db.Decimal(6, 3)
+  lineTotal      Decimal  @map("line_total") @db.Decimal(12, 2)
+  sale           Sale     @relation(fields: [saleId], references: [id])
+  product        Product? @relation(fields: [productId], references: [id])
+
+  @@map("sale_items")
+}
+
+model Payment {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  saleId    BigInt   @map("sale_id") @db.UnsignedBigInt
+  method    PaymentMethod
+  amount    Decimal  @db.Decimal(12, 2)
+  reference String?  @db.VarChar(120)
+  paidAt    DateTime @default(now()) @map("paid_at") @db.Timestamp(0)
+  sale      Sale     @relation(fields: [saleId], references: [id])
+
+  @@map("payments")
+}
+
+model InventoryMovement {
+  id            BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId       BigInt   @map("store_id") @db.UnsignedBigInt
+  productId     BigInt   @map("product_id") @db.UnsignedBigInt
+  userId        BigInt?  @map("user_id") @db.UnsignedBigInt
+  saleId        BigInt?  @map("sale_id") @db.UnsignedBigInt
+  movementType  MovementType @map("movement_type")
+  quantityDelta Int      @map("quantity_delta")
+  quantityAfter Int      @map("quantity_after") @db.UnsignedInt
+  note          String?  @db.VarChar(255)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  store         Store    @relation(fields: [storeId], references: [id])
+  product       Product  @relation(fields: [productId], references: [id])
+  user          User?    @relation(fields: [userId], references: [id])
+  sale          Sale?    @relation(fields: [saleId], references: [id])
+
+  @@index([storeId, createdAt])
+  @@map("inventory_movements")
+}
+
+model AuditLog {
+  id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId    BigInt?  @map("store_id") @db.UnsignedBigInt
+  userId     BigInt?  @map("user_id") @db.UnsignedBigInt
+  action     String   @db.VarChar(100)
+  entityType String   @map("entity_type") @db.VarChar(80)
+  entityId   String?  @map("entity_id") @db.VarChar(80)
+  ipAddress  Bytes?   @map("ip_address") @db.VarBinary(16)
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  store      Store?   @relation(fields: [storeId], references: [id])
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([storeId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+model StoreSetting {
+  storeId    BigInt   @map("store_id") @db.UnsignedBigInt
+  settingKey String   @map("setting_key") @db.VarChar(100)
+  settingValue Json   @map("setting_value")
+  updatedBy  BigInt?  @map("updated_by") @db.UnsignedBigInt
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamp(0)
+  store      Store    @relation(fields: [storeId], references: [id])
+  user       User?    @relation(fields: [updatedBy], references: [id])
+
+  @@id([storeId, settingKey])
+  @@map("store_settings")
+}
+
+model DataExport {
+  id          BigInt       @id @default(autoincrement()) @db.UnsignedBigInt
+  storeId     BigInt       @map("store_id") @db.UnsignedBigInt
+  userId      BigInt?      @map("user_id") @db.UnsignedBigInt
+  exportType  ExportType   @map("export_type")
+  fileName    String       @map("file_name") @db.VarChar(255)
+  status      ExportStatus @default(queued)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamp(0)
+  completedAt DateTime?    @map("completed_at") @db.Timestamp(0)
+  store       Store        @relation(fields: [storeId], references: [id])
+  user        User?        @relation(fields: [userId], references: [id])
+
+  @@index([storeId, createdAt])
+  @@map("data_exports")
+}
