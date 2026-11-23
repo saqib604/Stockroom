@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common'
+import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from '@nestjs/common'
 import { compare } from 'bcryptjs'
 import { sign, verify } from 'jsonwebtoken'
 import { PrismaService } from './prisma.service'
@@ -12,7 +12,7 @@ const tokenSecret = () => {
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   async login(email: string, password: string) {
     const user = await this.prisma.user.findFirst({ where: { email: email.toLowerCase(), isActive: true, deletedAt: null }, include: { storeLinks: { include: { store: true, role: true } } } })

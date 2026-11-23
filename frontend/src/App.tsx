@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Archive, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleDollarSign, ClipboardList, Download, LayoutDashboard, PackagePlus, Plus, Search, Settings, ShoppingCart, Users, X } from 'lucide-react'
-import { checkout as submitCheckout, createProduct, listProducts, login, restockProduct, type Product, type Session } from './api'
+import { checkout as submitCheckout, createProduct, getDashboardSummary, listProducts, login, restockProduct, type DashboardSummary, type Product, type Session } from './api'
 import './App.css'
 import './login.css'
 
@@ -10,6 +10,7 @@ const sections: { name: Section; icon: typeof LayoutDashboard }[] = [
   { name: 'Sales', icon: ShoppingCart }, { name: 'Customers', icon: Users }, { name: 'Reports', icon: ChartNoAxesCombined },
 ]
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
+const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()
 
 function App() {
   const [section, setSection] = useState<Section>('Overview')
@@ -18,6 +19,7 @@ function App() {
     return saved ? JSON.parse(saved) as Session : null
   })
   const [products, setProducts] = useState<Product[]>([])
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [query, setQuery] = useState('')
@@ -31,13 +33,20 @@ function App() {
   const count = Object.values(cart).reduce((sum, itemCount) => sum + itemCount, 0)
   const total = products.reduce((sum, p) => sum + p.price * (cart[p.id] ?? 0), 0)
   const alert = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 2500) }
-  const refreshProducts = async (token: string) => setProducts(await listProducts(token))
+  const refreshData = async (token: string) => {
+    const [rows, summary] = await Promise.all([listProducts(token), getDashboardSummary(token)])
+    setProducts(rows)
+    setDashboard(summary)
+  }
 
   useEffect(() => {
     if (!session) return
     let active = true
-    listProducts(session.accessToken).then((rows) => {
-      if (active) setProducts(rows)
+    Promise.all([listProducts(session.accessToken), getDashboardSummary(session.accessToken)]).then(([rows, summary]) => {
+      if (active) {
+        setProducts(rows)
+        setDashboard(summary)
+      }
     }).catch((error: unknown) => {
       if (!active) return
       localStorage.removeItem('stockroom-session')
@@ -71,6 +80,7 @@ function App() {
     localStorage.removeItem('stockroom-session')
     setSession(null)
     setProducts([])
+    setDashboard(null)
     setCart({})
   }
 
@@ -79,7 +89,7 @@ function App() {
     setBusy(true)
     try {
       await restockProduct(session.accessToken, id, 10)
-      await refreshProducts(session.accessToken)
+      await refreshData(session.accessToken)
       alert('Inventory restocked')
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Could not restock product')
@@ -100,7 +110,7 @@ function App() {
     setBusy(true)
     try {
       await createProduct(session.accessToken, { name, sku, price, stock, category: String(data.get('category') || 'General') })
-      await refreshProducts(session.accessToken)
+      await refreshData(session.accessToken)
       setShowForm(false)
       alert('Product added to catalog')
     } catch (error) {
@@ -114,12 +124,12 @@ function App() {
     setBusy(true)
     try {
       const sale = await submitCheckout(session.accessToken, Object.entries(cart).map(([productId, quantity]) => ({ productId, quantity })))
-      await refreshProducts(session.accessToken)
+      await refreshData(session.accessToken)
       setCart({})
       alert(`Sale ${sale.receiptNumber} completed · ${money.format(Number(sale.totalAmount))}`)
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Checkout failed')
-      await refreshProducts(session.accessToken).catch(() => undefined)
+      await refreshData(session.accessToken).catch(() => undefined)
     } finally {
       setBusy(false)
     }
@@ -141,13 +151,13 @@ function App() {
     <main className="main-area">
       <header className="topbar"><div className="breadcrumb">Store <span>/</span> <strong>{section}</strong></div><div className="topbar-actions"><label className="global-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search products..." aria-label="Search products" /><kbd>⌘ K</kbd></label><button className="icon-button" aria-label="Notifications" onClick={() => alert('You’re all caught up')}><Bell size={18} /><i /></button><span className="topbar-date">Thursday, June 12</span></div></header>
       <div className="page-content">
-        <div className="page-heading"><div><div className="eyebrow">THURSDAY, JUNE 12, 2025 <i /></div><h1>{heading}</h1><p>{section === 'Overview' ? 'Here’s what’s happening at your store today.' : `${section} activity and store records.`}</p></div><div className="heading-actions"><button className="button button-secondary" onClick={exportCsv}><Download size={16} /> Export</button><button className="button button-primary" onClick={() => section === 'Sales' ? setCart((current) => ({ ...current, [products[0].id]: (current[products[0].id] ?? 0) + 1 })) : setShowForm(true)}><Plus size={17} />{section === 'Sales' ? 'Add item' : 'New product'}</button></div></div>
+        <div className="page-heading"><div><div className="eyebrow">{todayLabel} <i /></div><h1>{heading}</h1><p>{section === 'Overview' ? 'Here’s what’s happening at your store today.' : `${section} activity and store records.`}</p></div><div className="heading-actions"><button className="button button-secondary" onClick={exportCsv}><Download size={16} /> Export</button><button className="button button-primary" disabled={section === 'Sales' && (!products.length || busy)} onClick={() => section === 'Sales' ? setCart((current) => ({ ...current, [products[0].id]: (current[products[0].id] ?? 0) + 1 })) : setShowForm(true)}><Plus size={17} />{section === 'Sales' ? 'Add item' : 'New product'}</button></div></div>
         {section === 'Overview' && <>
-          <section className="metric-grid"><Metric label="Gross sales" value="$2,840.50" trend="12.8%" icon={<CircleDollarSign size={17} />} /><Metric label="Orders" value="48" trend="8.2%" icon={<ClipboardList size={17} />} /><Metric label="Items sold" value="126" trend="4.6%" icon={<Boxes size={17} />} /><Metric label="Average order" value="$59.18" trend="2.1%" icon={<ChartNoAxesCombined size={17} />} /></section>
-          <section className="overview-grid"><div className="panel sales-panel"><div className="panel-heading"><div><h2>Sales overview</h2><p>Revenue performance for the past week</p></div><button className="select-button" onClick={() => alert('Showing the last 7 days')}>Last 7 days <ChevronDown size={14} /></button></div><div className="chart-legend"><span><i className="legend-current" />This week</span><span><i className="legend-previous" />Last week</span><strong>$2,840.50 <small>+12.8%</small></strong></div><div className="chart-area"><div className="chart-y-labels"><span>$1k</span><span>$750</span><span>$500</span><span>$250</span><span>$0</span></div><div className="chart-plot"><div className="chart-grid-lines"><i /><i /><i /><i /><i /></div><div className="bar-chart">{[42, 64, 51, 79, 58, 90, 68].map((height, index) => <div className="bar-group" key={index}><span className="bar last-week" style={{ height: `${height * .67}%` }} /><span className="bar this-week" style={{ height: `${height}%` }} /></div>)}</div><div className="chart-x-labels">{['Fri', 'Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu'].map((day) => <span key={day}>{day}</span>)}</div></div></div></div>
-            <div className="panel inventory-panel"><div className="panel-heading"><div><h2>Stock health</h2><p>Current inventory status</p></div><button className="more-button" onClick={() => setSection('Inventory')}>•••</button></div><div className="stock-summary"><div className="stock-ring"><div><strong>248</strong><span>total items</span></div></div><div className="stock-legend"><div><i className="stock-good" />Healthy <strong>213</strong></div><div><i className="stock-low" />Low stock <strong>28</strong></div><div><i className="stock-out" />Out of stock <strong>7</strong></div></div></div><button className="text-link" onClick={() => setSection('Inventory')}>Review inventory <ArrowUpRight size={14} /></button></div></section>
+          <section className="metric-grid"><Metric label="Gross sales · 7 days" value={dashboard ? money.format(dashboard.grossSales) : '—'} trend={dashboard?.grossSalesChange} icon={<CircleDollarSign size={17} />} /><Metric label="Orders · 7 days" value={dashboard ? String(dashboard.orderCount) : '—'} trend={dashboard?.orderCountChange} icon={<ClipboardList size={17} />} /><Metric label="Items sold · 7 days" value={dashboard ? String(dashboard.itemsSold) : '—'} trend={dashboard?.itemsSoldChange} icon={<Boxes size={17} />} /><Metric label="Average order" value={dashboard ? money.format(dashboard.averageOrder) : '—'} trend={dashboard?.averageOrderChange} icon={<ChartNoAxesCombined size={17} />} /></section>
+          <section className="overview-grid"><div className="panel sales-panel"><div className="panel-heading"><div><h2>Sales overview</h2><p>Completed sales · last 7 days</p></div><span className="select-button">Last 7 days <ChevronDown size={14} /></span></div><div className="chart-legend"><span><i className="legend-current" />This week</span><span><i className="legend-previous" />Previous week</span><strong>{money.format(dashboard?.grossSales ?? 0)} {dashboard?.grossSalesChange != null && <small>{dashboard.grossSalesChange >= 0 ? '+' : ''}{dashboard.grossSalesChange.toFixed(1)}%</small>}</strong></div><div className="chart-area"><div className="chart-y-labels"><span>$1k</span><span>$750</span><span>$500</span><span>$250</span><span>$0</span></div><div className="chart-plot"><div className="chart-grid-lines"><i /><i /><i /><i /><i /></div><div className="bar-chart">{(dashboard?.dailySales ?? []).map((day) => { const max = Math.max(1, ...dashboard!.dailySales.flatMap((item) => [item.total, item.previousTotal])); return <div className="bar-group" key={day.date} title={`${day.date}: ${money.format(day.total)} this week, ${money.format(day.previousTotal)} previous week`}><span className="bar last-week" style={{ height: `${Math.max(2, day.previousTotal / max * 100)}%` }} /><span className="bar this-week" style={{ height: `${Math.max(2, day.total / max * 100)}%` }} /></div> })}</div><div className="chart-x-labels">{(dashboard?.dailySales ?? []).map((day) => <span key={day.date}>{day.label}</span>)}</div></div></div></div>
+            <div className="panel inventory-panel"><div className="panel-heading"><div><h2>Stock health</h2><p>Current inventory status</p></div><button className="more-button" onClick={() => setSection('Inventory')}>•••</button></div><div className="stock-summary"><div className="stock-ring"><div><strong>{dashboard?.stock.units ?? '—'}</strong><span>total units</span></div></div><div className="stock-legend"><div><i className="stock-good" />Healthy <strong>{dashboard?.stock.healthy ?? '—'}</strong></div><div><i className="stock-low" />Low stock <strong>{dashboard?.stock.low ?? '—'}</strong></div><div><i className="stock-out" />Out of stock <strong>{dashboard?.stock.out ?? '—'}</strong></div></div></div><button className="text-link" onClick={() => setSection('Inventory')}>Review inventory <ArrowUpRight size={14} /></button></div></section>
           <section className="panel product-panel"><div className="panel-heading"><div><h2>Products to watch</h2><p>Items that may need your attention</p></div><button className="text-link" onClick={() => setSection('Inventory')}>View all inventory <ArrowUpRight size={14} /></button></div>{loading ? <div className="empty-state">Loading inventory…</div> : <ProductTable products={matches.filter((p) => p.stock <= 8).slice(0, 4)} onRestock={restock} />}</section>
-          <section className="bottom-grid"><div className="panel activity-panel"><div className="panel-heading"><div><h2>Recent activity</h2><p>Latest updates from your store</p></div></div><Activity initials="JS" name="Jamie Sullivan" action="purchased 2 items" time="8 min ago" amount="$84.00" /><Activity initials="IN" name="Inventory updated" action="Linen Market Tote · +12 units" time="42 min ago" amount="" /><Activity initials="CR" name="Chris Rivera" action="purchased 1 item" time="1 hr ago" amount="$42.00" /></div><div className="panel quick-panel"><div className="panel-heading"><div><h2>Quick actions</h2><p>Get things done faster</p></div></div><button className="quick-action" onClick={() => setSection('Sales')}><ShoppingCart size={18} /><span><strong>New sale</strong><small>Ring up a customer</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={() => setShowForm(true)}><PackagePlus size={18} /><span><strong>Add product</strong><small>Grow your catalog</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={exportCsv}><Download size={18} /><span><strong>Export data</strong><small>Download as CSV</small></span><ArrowUpRight size={15} /></button></div></section>
+          <section className="bottom-grid"><div className="panel activity-panel"><div className="panel-heading"><div><h2>Recent sales</h2><p>Latest transactions recorded by the API</p></div></div>{dashboard?.recentSales.length ? dashboard.recentSales.slice(0, 3).map((sale) => <Activity key={sale.receiptNumber} initials={sale.customerName.split(' ').map((part) => part[0]).join('').slice(0, 2)} name={sale.customerName} action={`receipt ${sale.receiptNumber}`} time={new Date(sale.soldAt).toLocaleString()} amount={money.format(sale.total)} />) : <div className="empty-state">No sales recorded yet.</div>}</div><div className="panel quick-panel"><div className="panel-heading"><div><h2>Quick actions</h2><p>Store operations</p></div></div><button className="quick-action" onClick={() => setSection('Sales')}><ShoppingCart size={18} /><span><strong>New sale</strong><small>Ring up a customer</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={() => setShowForm(true)}><PackagePlus size={18} /><span><strong>Add product</strong><small>Grow your catalog</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={exportCsv}><Download size={18} /><span><strong>Export data</strong><small>Download as CSV</small></span><ArrowUpRight size={15} /></button></div></section>
         </>}
         {isProducts && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><div className="table-filters"><button className="filter-chip selected">All items <span>{products.length}</span></button><button className="filter-chip" onClick={() => setQuery('')}>Active</button><button className="filter-chip" onClick={() => setProducts((current) => [...current].sort((a, b) => a.stock - b.stock))}>Stock level <ChevronDown size={14} /></button></div><button className="button button-secondary compact" onClick={exportCsv}><Download size={15} /> Export CSV</button></div>{loading ? <div className="empty-state">Loading products…</div> : <ProductTable products={matches} actionLabel={section === 'Sales' ? 'Add to cart' : 'Add 10 units'} onRestock={(id) => {
           if (section === 'Sales') {
@@ -159,7 +169,7 @@ function App() {
           void restock(id)
         }} />}<div className="table-footer"><span>Showing <strong>{matches.length}</strong> of <strong>{products.length}</strong> products</span><button disabled>Previous　 1　 Next</button></div>{section === 'Sales' && <div className="checkout-bar"><span><strong>{count} items</strong>　{money.format(total)} total</span><button className="button button-primary" disabled={!count || busy} onClick={checkout}>Charge {money.format(total)} <ArrowUpRight size={15} /></button></div>}</section>}
         {section === 'Customers' && <section className="panel placeholder-panel"><Users size={24} /><h2>Customer book</h2><p>Manage customer profiles and purchase history.</p><button className="button button-primary" onClick={() => alert('Customer setup is ready')}><Plus size={16} /> Add customer</button></section>}
-        {section === 'Reports' && <section className="report-grid"><Report label="Net sales this month" value="$18,425.80" trend="9.4% from last month" icon={<ChartNoAxesCombined size={18} />} /><Report label="Sell-through rate" value="68.2%" trend="3.1% from last month" icon={<Boxes size={18} />} /><Report label="Returning customers" value="34.6%" trend="1.2% from last month" icon={<Users size={18} />} down /><div className="panel report-note"><h2>Report exports</h2><p>Download your product catalog in spreadsheet-friendly CSV format.</p><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export product report</button></div></section>}
+        {section === 'Reports' && <section className="report-grid"><Report label="Net sales this month" value={money.format(dashboard?.monthlySales ?? 0)} trend="Month to date" icon={<ChartNoAxesCombined size={18} />} /><Report label="Sell-through rate" value="—" trend="Requires sales history" icon={<Boxes size={18} />} /><Report label="Returning customers" value="—" trend="Customer analytics unavailable" icon={<Users size={18} />} down /><div className="panel report-note"><h2>Report exports</h2><p>Download your product catalog in spreadsheet-friendly CSV format.</p><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export product report</button></div></section>}
         {section === 'Settings' && <section className="panel settings-panel"><div className="panel-heading"><div><h2>Store profile</h2><p>Business details used across receipts and reports.</p></div><button className="button button-primary" onClick={() => alert('Store settings saved')}>Save changes</button></div><label>Store name<input defaultValue="Mercantile & Moss" /></label><div className="settings-row"><label>Currency<select defaultValue="USD"><option>USD · US Dollar</option><option>EUR · Euro</option><option>GBP · Pound Sterling</option></select></label><label>Time zone<select defaultValue="Eastern Time"><option>Eastern Time</option><option>Central Time</option><option>Pacific Time</option></select></label></div><hr /><div className="panel-heading"><div><h2>Data & exports</h2><p>Keep a local copy of your product data.</p></div><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export CSV</button></div></section>}
       </div>
       <footer className="app-footer"><span>© 2025 Stockroom, Inc.</span><span><i /> API connected</span><span>Version 1.0.0</span></footer>
@@ -168,7 +178,7 @@ function App() {
     {notice && <div className="toast"><span>✓</span>{notice}</div>}
   </div>
 }
-function Metric({ label, value, trend, icon }: { label: string; value: string; trend: string; icon: React.ReactNode }) { return <article className="metric-card"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong className="metric-value">{value}</strong><div className="metric-foot"><span className="trend"><ArrowUpRight size={13} /> {trend}</span><span>vs. last Thursday</span></div></article> }
+function Metric({ label, value, trend, icon }: { label: string; value: string; trend: number | null | undefined; icon: React.ReactNode }) { return <article className="metric-card"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong className="metric-value">{value}</strong><div className="metric-foot"><span className="trend">{trend == null ? 'No prior period' : <>{trend >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />} {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%</>}</span><span>vs. previous 7 days</span></div></article> }
 function ProductTable({ products, onRestock, actionLabel = 'Add 10 units' }: { products: Product[]; onRestock: (id: string) => void; actionLabel?: string }) { return <div className="table-scroll"><table className="product-table"><thead><tr><th>PRODUCT</th><th>SKU</th><th>CATEGORY</th><th>PRICE</th><th>IN STOCK</th><th>STATUS</th><th /></tr></thead><tbody>{products.map((p) => <tr key={p.id}><td><div className="product-name-cell"><span className="product-swatch">{p.name.slice(0, 1)}</span><div><strong>{p.name}</strong><small>{p.id}</small></div></div></td><td className="sku-cell">{p.sku}</td><td>{p.category}</td><td className="price-cell">{money.format(p.price)}</td><td>{p.stock} units</td><td><span className={`status-pill ${p.stock === 0 ? 'out-of-stock' : p.stock <= 8 ? 'low-stock' : 'in-stock'}`}><i />{p.stock === 0 ? 'Out of stock' : p.stock <= 8 ? 'Low stock' : 'In stock'}</span></td><td><button className="row-action" title={actionLabel} aria-label={`${actionLabel}: ${p.name}`} disabled={actionLabel === 'Add to cart' && p.stock === 0} onClick={() => onRestock(p.id)}><Plus size={15} /></button></td></tr>)}</tbody></table>{products.length === 0 && <div className="empty-state"><Search size={19} />No products match your search.</div>}</div> }
 function Activity({ initials, name, action, time, amount }: { initials: string; name: string; action: string; time: string; amount: string }) { return <div className="activity-row"><span className="activity-avatar">{initials}</span><div className="activity-copy"><strong>{name}</strong><span>{action}</span></div><time>{time}</time><strong className="activity-amount">{amount}</strong></div> }
 function Report({ label, value, trend, icon, down = false }: { label: string; value: string; trend: string; icon: React.ReactNode; down?: boolean }) { return <div className="panel report-card"><span className="metric-icon">{icon}</span><span>{label}</span><strong>{value}</strong><small>{down ? <ArrowDownRight size={13} /> : <ArrowUpRight size={13} />} {trend}</small></div> }

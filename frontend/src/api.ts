@@ -19,6 +19,21 @@ export type Session = {
   }
 }
 
+export type DashboardSummary = {
+  grossSales: number
+  orderCount: number
+  itemsSold: number
+  averageOrder: number
+  grossSalesChange: number | null
+  orderCountChange: number | null
+  itemsSoldChange: number | null
+  averageOrderChange: number | null
+  monthlySales: number
+  dailySales: Array<{ date: string; label: string; total: number; previousTotal: number }>
+  stock: { units: number; healthy: number; low: number; out: number }
+  recentSales: Array<{ receiptNumber: string; total: number; soldAt: string; customerName: string }>
+}
+
 const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001/api').replace(/\/$/, '')
 
 async function request<T>(path: string, token?: string, init?: RequestInit): Promise<T> {
@@ -45,6 +60,10 @@ export function login(email: string, password: string) {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   })
+}
+
+export function getDashboardSummary(token: string) {
+  return request<DashboardSummary>('/dashboard/summary', token)
 }
 
 export async function listProducts(token: string): Promise<Product[]> {

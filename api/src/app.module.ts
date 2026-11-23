@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Module, NotFoundException, Param, Post, Req, UseGuards } from '@nestjs/common'
+import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Inject, Module, NotFoundException, Param, Post, Req, UseGuards } from '@nestjs/common'
 import { IsArray, IsEmail, IsEnum, IsInt, IsNumber, IsOptional, IsString, Matches, Min, MinLength, ValidateNested, validateOrReject } from 'class-validator'
 import { plainToInstance, Type } from 'class-transformer'
 import { randomBytes } from 'node:crypto'
@@ -44,17 +44,109 @@ function requireRole(user: Session, roles: string[]) {
 
 @Controller('auth')
 class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
   @Post('login') async login(@Body() body: unknown) { const dto = await validateBody(LoginBody, body); return this.auth.login(dto.email, dto.password) }
+}
+
+@Controller('dashboard')
+@UseGuards(JwtGuard)
+class DashboardController {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  @Get('summary') async summary(@Req() req: { user: Session }) {
+    const storeId = BigInt(req.user.storeId)
+    const now = new Date()
+    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+    const weekStart = new Date(today)
+    weekStart.setUTCDate(today.getUTCDate() - 6)
+    const previousStart = new Date(weekStart)
+    previousStart.setUTCDate(weekStart.getUTCDate() - 7)
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+
+    const [sales, monthlySales, inventory, recentSales] = await Promise.all([
+      this.prisma.sale.findMany({
+        where: { storeId, status: 'completed', soldAt: { gte: previousStart } },
+        select: { soldAt: true, totalAmount: true, items: { select: { quantity: true } } },
+      }),
+      this.prisma.sale.aggregate({
+        where: { storeId, status: 'completed', soldAt: { gte: monthStart } },
+        _sum: { totalAmount: true },
+      }),
+      this.prisma.inventory.findMany({
+        where: { storeId, product: { isActive: true, deletedAt: null } },
+        select: { quantityOnHand: true },
+      }),
+      this.prisma.sale.findMany({
+        where: { storeId },
+        orderBy: { soldAt: 'desc' },
+        take: 5,
+        select: { receiptNumber: true, totalAmount: true, soldAt: true, customer: { select: { firstName: true, lastName: true } } },
+      }),
+    ])
+
+    const dailySales = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(weekStart)
+      date.setUTCDate(weekStart.getUTCDate() + index)
+      const previousDate = new Date(date)
+      previousDate.setUTCDate(date.getUTCDate() - 7)
+      const dayTotal = (target: Date) => sales
+        .filter((sale) => sale.soldAt.toISOString().slice(0, 10) === target.toISOString().slice(0, 10))
+        .reduce((sum, sale) => sum + Number(sale.totalAmount), 0)
+      return {
+        date: date.toISOString().slice(0, 10),
+        label: date.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }),
+        total: dayTotal(date),
+        previousTotal: dayTotal(previousDate),
+      }
+    })
+    const currentSales = sales.filter((sale) => sale.soldAt >= weekStart)
+    const previousSales = sales.filter((sale) => sale.soldAt < weekStart)
+    const sumTotal = (rows: typeof sales) => rows.reduce((sum, sale) => sum + Number(sale.totalAmount), 0)
+    const sumItems = (rows: typeof sales) => rows.reduce((sum, sale) => sum + sale.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0)
+    const currentGross = sumTotal(currentSales)
+    const currentCount = currentSales.length
+    const currentItems = sumItems(currentSales)
+    const previousGross = sumTotal(previousSales)
+    const previousCount = previousSales.length
+    const previousItems = sumItems(previousSales)
+    const stock = inventory.reduce((totals, row) => {
+      totals.units += row.quantityOnHand
+      if (row.quantityOnHand === 0) totals.out += 1
+      else if (row.quantityOnHand <= 8) totals.low += 1
+      else totals.healthy += 1
+      return totals
+    }, { units: 0, healthy: 0, low: 0, out: 0 })
+    const change = (current: number, previous: number) => previous === 0 ? null : ((current - previous) / previous) * 100
+
+    return {
+      grossSales: currentGross,
+      orderCount: currentCount,
+      itemsSold: currentItems,
+      averageOrder: currentCount ? currentGross / currentCount : 0,
+      grossSalesChange: change(currentGross, previousGross),
+      orderCountChange: change(currentCount, previousCount),
+      itemsSoldChange: change(currentItems, previousItems),
+      averageOrderChange: change(currentCount ? currentGross / currentCount : 0, previousCount ? previousGross / previousCount : 0),
+      monthlySales: Number(monthlySales._sum.totalAmount ?? 0),
+      dailySales,
+      stock,
+      recentSales: recentSales.map((sale) => ({
+        receiptNumber: sale.receiptNumber,
+        total: Number(sale.totalAmount),
+        soldAt: sale.soldAt,
+        customerName: sale.customer ? `${sale.customer.firstName} ${sale.customer.lastName}` : 'Walk-in customer',
+      })),
+    }
+  }
 }
 
 @Controller('products')
 @UseGuards(JwtGuard)
 class ProductsController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
   @Get() async list(@Req() req: { user: Session }) {
     const rows = await this.prisma.product.findMany({ where: { storeId: BigInt(req.user.storeId), deletedAt: null }, include: { category: true, inventories: { where: { storeId: BigInt(req.user.storeId) } } }, orderBy: { name: 'asc' } })
-    return rows.map(({ inventories, costPrice, sellingPrice, ...product }) => ({ ...product, id: product.id.toString(), storeId: product.storeId.toString(), categoryId: product.categoryId?.toString() ?? null, price: Number(sellingPrice), costPrice: Number(costPrice), stock: inventories[0]?.quantityOnHand ?? 0 }))
+    return rows.map(({ inventories, costPrice, sellingPrice, category, ...product }) => ({ ...product, id: product.id.toString(), storeId: product.storeId.toString(), categoryId: product.categoryId?.toString() ?? null, category: category?.name ?? null, price: Number(sellingPrice), costPrice: Number(costPrice), stock: inventories[0]?.quantityOnHand ?? 0 }))
   }
   @Post() async create(@Req() req: { user: Session }, @Body() body: unknown) {
     requireRole(req.user, ['owner', 'manager'])
@@ -66,7 +158,7 @@ class ProductsController {
       const stock = dto.stock ?? 0
       await tx.inventory.create({ data: { storeId, productId: product.id, quantityOnHand: stock } })
       if (stock > 0) await tx.inventoryMovement.create({ data: { storeId, productId: product.id, userId: BigInt(req.user.userId), movementType: 'opening', quantityDelta: stock, quantityAfter: stock } })
-      return { ...product, id: product.id.toString(), price: Number(product.sellingPrice), stock }
+      return { ...product, id: product.id.toString(), categoryId: product.categoryId?.toString() ?? null, price: Number(product.sellingPrice), stock }
     })
   }
   @Post(':id/restock') async restock(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
@@ -85,7 +177,7 @@ class ProductsController {
 @Controller('sales')
 @UseGuards(JwtGuard)
 class SalesController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
   @Post('checkout') async checkout(@Req() req: { user: Session }, @Body() body: unknown) {
     const dto = await validateBody(CheckoutBody, body)
     if (!Array.isArray(dto.lines) || dto.lines.length === 0) throw new BadRequestException('At least one sale line is required')
@@ -124,5 +216,5 @@ class SalesController {
   }
 }
 
-@Module({ controllers: [AuthController, ProductsController, SalesController], providers: [PrismaService, AuthService, JwtGuard] })
+@Module({ controllers: [AuthController, DashboardController, ProductsController, SalesController], providers: [PrismaService, AuthService, JwtGuard] })
 export class AppModule {}
