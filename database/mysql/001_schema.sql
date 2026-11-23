@@ -105,6 +105,7 @@ CREATE TABLE products (
   track_inventory BOOLEAN NOT NULL DEFAULT TRUE,
   reorder_level INT UNSIGNED NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  in_demand BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted_at TIMESTAMP NULL,
@@ -118,12 +119,14 @@ CREATE TABLE products (
 CREATE TABLE inventory (
   store_id BIGINT UNSIGNED NOT NULL,
   product_id BIGINT UNSIGNED NOT NULL,
-  quantity_on_hand INT NOT NULL DEFAULT 0,
+  qty_display INT UNSIGNED NOT NULL DEFAULT 0,
+  qty_warehouse INT UNSIGNED NOT NULL DEFAULT 0,
+  qty_home INT UNSIGNED NOT NULL DEFAULT 0,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (store_id, product_id), KEY idx_inventory_stock (store_id, quantity_on_hand),
+  PRIMARY KEY (store_id, product_id),
   CONSTRAINT fk_inventory_store FOREIGN KEY (store_id) REFERENCES stores(id),
   CONSTRAINT fk_inventory_product FOREIGN KEY (product_id) REFERENCES products(id),
-  CONSTRAINT chk_inventory_nonnegative CHECK (quantity_on_hand >= 0)
+  CONSTRAINT chk_inventory_nonnegative CHECK (qty_display >= 0 AND qty_warehouse >= 0 AND qty_home >= 0)
 ) ENGINE=InnoDB;
 
 CREATE TABLE customers (

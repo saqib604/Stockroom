@@ -181,6 +181,7 @@ model Product {
   trackInventory Boolean            @default(true) @map("track_inventory")
   reorderLevel  Int                 @default(0) @map("reorder_level") @db.UnsignedInt
   isActive      Boolean             @default(true) @map("is_active")
+  inDemand      Boolean             @default(false) @map("in_demand")
   deletedAt     DateTime?           @map("deleted_at") @db.Timestamp(0)
   createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamp(0)
   updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamp(0)
@@ -198,7 +199,9 @@ model Product {
 model Inventory {
   storeId       BigInt   @map("store_id") @db.UnsignedBigInt
   productId     BigInt   @map("product_id") @db.UnsignedBigInt
-  quantityOnHand Int     @default(0) @map("quantity_on_hand")
+  qtyDisplay    Int      @default(0) @map("qty_display") @db.UnsignedInt
+  qtyWarehouse  Int      @default(0) @map("qty_warehouse") @db.UnsignedInt
+  qtyHome       Int      @default(0) @map("qty_home") @db.UnsignedInt
   updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamp(0)
   store         Store    @relation(fields: [storeId], references: [id])
   product       Product  @relation(fields: [productId], references: [id])

@@ -1,0 +1,2 @@
+ALTER TABLE products
+  ADD COLUMN in_demand BOOLEAN NOT NULL DEFAULT FALSE AFTER is_active;

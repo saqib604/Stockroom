@@ -45,6 +45,27 @@ Successful response (`201`):
 
 Invalid credentials or a user without a store membership return `401`.
 
+## Store settings
+
+### `GET /settings`
+
+Authentication required. Returns the current store's name, currency, IANA time zone, and optional default customer ID.
+
+### `PATCH /settings`
+
+Authentication required. Only `owner` and `manager` roles may update settings. All fields are optional; `defaultCustomerId: null` clears the default. A customer ID must belong to the authenticated store.
+
+```json
+{
+  "storeName": "My Retail Store",
+  "currency": "PKR",
+  "timezone": "Asia/Karachi",
+  "defaultCustomerId": "4"
+}
+```
+
+Supported currencies are `USD`, `EUR`, `GBP`, and `PKR`. Supported time zones are `UTC`, `Asia/Karachi`, `America/New_York`, `America/Chicago`, and `America/Los_Angeles`.
+
 ## Dashboard
 
 ### `GET /dashboard/summary`
@@ -63,7 +84,12 @@ Successful response (`200`):
   "orderCountChange": 8.2,
   "itemsSoldChange": 4.6,
   "averageOrderChange": 2.1,
+  "todaySales": 84,
+  "todayOrderCount": 3,
+  "weeklySales": 2840.5,
+  "weeklyOrderCount": 48,
   "monthlySales": 18425.8,
+  "monthlyOrderCount": 212,
   "dailySales": [
     {
       "date": "2026-11-19",
@@ -89,10 +115,11 @@ Successful response (`200`):
 }
 ```
 
-- Sales cards compare the latest seven UTC calendar days with the seven days before them.
+- `todaySales` and `todayOrderCount` are completed sales for the current date in the store's configured time zone.
+- `weeklySales` and `weeklyOrderCount` are the latest seven local calendar days. The existing change fields compare that period with the prior seven days.
+- `monthlySales` and `monthlyOrderCount` are month-to-date in the store's configured time zone.
 - `dailySales` contains one item per day for the latest seven-day period, with the matching previous-week total.
 - A change field is `null` when the previous period has no sales to compare.
-- `monthlySales` is completed sales month-to-date in UTC.
 - Stock counts include active products only; `healthy`, `low`, and `out` count products, while `units` sums on-hand inventory. Low stock means 1-8 units.
 - `recentSales` contains up to five most recent sales for the store.
 
@@ -144,6 +171,8 @@ Request:
   "category": "Kitchen",
   "price": 24,
   "costPrice": 10,
+  "taxRate": 8.25,
+  "inDemand": true,
   "stock": 32
 }
 ```
@@ -152,6 +181,8 @@ Request:
 - `category` is optional; when present it is created or reused for the store.
 - `price` is required and must be a number greater than or equal to zero.
 - `costPrice` is optional and must be a non-negative number; defaults to `0`.
+- `taxRate` is an optional percentage added to the sale price at checkout; defaults to `0`.
+- `inDemand` is an optional boolean catalog marker; defaults to `false`.
 - `stock` is optional and must be a non-negative integer; defaults to `0`.
 
 Successful response (`201`):
@@ -169,6 +200,20 @@ Successful response (`201`):
 ```
 
 Store SKUs must be unique. The database enforces this, but duplicate-SKU errors are not currently translated into a dedicated API response and may surface as `500 Internal Server Error`.
+
+### `PATCH /products/:id` and `DELETE /products/:id`
+
+Authentication required. Only `owner` and `manager` roles may edit or delete products. `PATCH` accepts any subset of the product fields from creation, including inventory quantities; inventory changes are recorded as movements. `DELETE` soft-deletes the product so historical sales and stock records are retained.
+
+## Customers
+
+### `GET /customers` and `POST /customers`
+
+Authentication required. Lists non-deleted customers for the current store or creates a customer in that store.
+
+### `PATCH /customers/:id` and `DELETE /customers/:id`
+
+Authentication required. Only `owner` and `manager` roles may edit or delete customers. `PATCH` accepts any subset of customer fields. `DELETE` soft-deletes the customer and clears it as the store's default customer if selected.
 
 ### `POST /products/:id/restock`
 
@@ -198,6 +243,10 @@ Invalid IDs return `400`; a product not found in the user's store returns `404`.
 
 ## Sales
 
+### `GET /sales`
+
+Authentication required. Returns up to 200 sales for the authenticated store, newest first. Each row includes its customer, item snapshots, payment history, `paidAmount`, `dueAmount`, and `paymentStatus` (`paid`, `partial`, or `unpaid`).
+
 ### `POST /sales/checkout`
 
 Authentication required. Records a completed sale, payment, sale items, inventory changes, and inventory movements in one transaction. Inventory is never decremented outside this transaction.
@@ -210,7 +259,9 @@ Request:
     { "productId": "12", "quantity": 2 }
   ],
   "paymentMethod": "cash",
-  "customerId": "5"
+  "customerId": "5",
+  "useDefaultCustomer": false,
+  "amountReceived": 50
 }
 ```
 
@@ -218,6 +269,8 @@ Request:
 - Each `productId` must be a positive integer string and each `quantity` a positive integer.
 - `paymentMethod` is optional: `cash`, `card`, `gift_card`, `store_credit`, or `other`. Defaults to `cash`.
 - `customerId` is optional and, when provided, must identify a non-deleted customer in the user's store.
+- `useDefaultCustomer` defaults to `true`; set it to `false` to explicitly make the sale a walk-in when no `customerId` is selected.
+- `amountReceived` is optional and defaults to the full total. It may be `0` for an unpaid sale, or any amount up to the total; a remaining balance is tracked as due.
 
 Successful response (`201`):
 
@@ -228,11 +281,21 @@ Successful response (`201`):
   "subtotal": "48.00",
   "taxAmount": "0.00",
   "totalAmount": "48.00",
+  "paidAmount": "48.00",
+  "dueAmount": "0.00",
   "status": "completed"
 }
 ```
 
 Invalid or unavailable products/customers return `400` or `404`. Insufficient inventory returns `409` and rolls back the sale transaction.
+
+### `POST /sales/:id/payments`
+
+Authentication required. Records a payment against a completed sale in the current store. The amount must be positive and cannot exceed its remaining balance.
+
+```json
+{ "amount": 25, "method": "cash" }
+```
 
 ## Common Errors
 

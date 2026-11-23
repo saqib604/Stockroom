@@ -40,15 +40,22 @@ The compose file runs MySQL only. It initializes the schema on the first databas
 
 - `POST /api/auth/login` with `{ "email": "...", "password": "..." }`
 - `GET /api/products` with `Authorization: Bearer <accessToken>`
-- `POST /api/products` with `{ "sku", "name", "category?", "price", "costPrice?", "stock?" }`
+- `POST /api/products` with `{ "sku", "name", "category?", "price", "costPrice?", "taxRate?", "inDemand?", "stock?" }`
+- `GET` and `PATCH /api/settings` to read or update store name, currency, timezone, and default customer
 - `POST /api/products/:id/restock` with `{ "quantity", "note?" }`
-- `POST /api/sales/checkout` with `{ "lines": [{ "productId", "quantity" }], "paymentMethod?", "customerId?" }`
+- `GET /api/sales` for the store sales ledger and payment balances
+- `POST /api/sales/checkout` with `{ "lines": [{ "productId", "quantity" }], "paymentMethod?", "customerId?", "amountReceived?" }`
+- `POST /api/sales/:id/payments` to record an additional payment against an outstanding balance
 
-Checkout validates store-owned products, checks inventory, and creates the sale, payment, line snapshots, and stock movement in one database transaction. Credentials and payment card data are not stored by this starter API; card processing requires a payment provider integration.
+The Sales workspace opens to the ledger. Choose **New sale** to open the POS, search products by name/SKU/category, select a customer, and record a full or partial payment. Checkout validates store-owned products, checks inventory, and creates the sale, payment, line snapshots, and stock movement in one database transaction. Outstanding balances remain visible in the ledger and can receive additional payments. Credentials and payment card data are not stored by this starter API; card processing requires a payment provider integration.
+
+In the frontend, set the store currency, time zone, and **Default customer** under **Settings**. The default customer is used for new sales unless a checkout request supplies another customer. Product sale prices are entered before tax; `taxRate` is a percentage (for example, `8.25` means 8.25%) added during checkout. Cost price is for inventory records and does not affect the checkout total.
 
 ## Database
 
 For manual MySQL installation, execute `database/mysql/001_schema.sql` against MySQL 8.0.16+. It creates the database, tables, indexes, constraints, role/permission defaults, and referential rules. Do not use Prisma `db push` against an existing production database; use reviewed migration SQL for production changes.
+
+For existing databases, apply `database/mysql/003_product_in_demand.sql` to add the product in-demand flag before deploying the updated API.
 
 ## Build and checks
 
@@ -59,4 +66,4 @@ For manual MySQL installation, execute `database/mysql/001_schema.sql` against M
 
 ## Current boundaries
 
-The frontend does not yet authenticate against the API, and its seeded screen values are illustrative. Customer management, refunds, audit event emission, backup scheduling, Excel import, and role-based endpoint authorization are represented in the database design but require additional end-to-end implementation before production use. Configure TLS, rate limits, secure secret storage, and a payment terminal/provider before handling real customer or payment data.
+The frontend authenticates against the API, while its dashboard sample presentation remains illustrative. Refunds, audit event emission, backup scheduling, Excel import, and fine-grained role-based endpoint authorization require additional end-to-end implementation before production use. Configure TLS, rate limits, secure secret storage, and a payment terminal/provider before handling real customer or payment data.
