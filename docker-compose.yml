@@ -8,14 +8,61 @@ services:
       MYSQL_USER: ${MYSQL_USER:-stockroom}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-local_change_me}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     volumes:
       - stockroom_mysql:/var/lib/mysql
       - ./database/mysql/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./database/mysql/004_store_scoped_roles.sql:/docker-entrypoint-initdb.d/004_store_scoped_roles.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p$${MYSQL_ROOT_PASSWORD}"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
       interval: 5s
       timeout: 5s
       retries: 20
+      start_period: 20s
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      DATABASE_URL: "mysql://${MYSQL_USER:-stockroom}:${MYSQL_PASSWORD:-local_change_me}@mysql:3306/${MYSQL_DATABASE:-stockroom}"
+      JWT_SECRET: ${JWT_SECRET:-local_development_secret_replace_before_deployment}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+    ports:
+      - "127.0.0.1:${API_PORT:-3001}:3001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3001/api}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  phpmyadmin:
+    image: phpmyadmin:5-apache
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_ARBITRARY: 0
+      UPLOAD_LIMIT: ${PHPMYADMIN_UPLOAD_LIMIT:-64M}
+    ports:
+      - "127.0.0.1:${PHPMYADMIN_PORT:-8081}:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
 volumes:
   stockroom_mysql:
