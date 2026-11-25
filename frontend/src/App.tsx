@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Archive, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleDollarSign, ClipboardList, Download, LayoutDashboard, PackagePlus, Pencil, Plus, Search, Settings, ShoppingCart, Trash2, Users, X } from 'lucide-react'
-import { adjustStock, checkout as submitCheckout, createCustomer, createProduct, deleteCustomer, deleteProduct, getDashboardSummary, getStoreSettings, listCustomers, listProducts, listSales, login, recordSalePayment, restockAtLocation, updateCustomer, updateProduct, updateStoreSettings, type Customer, type DashboardSummary, type Product, type SaleRecord, type Session, type StockLocation, type StoreSettings } from './api'
+import { Archive, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleDollarSign, ClipboardList, Download, LayoutDashboard, PackagePlus, Pencil, Plus, Search, Settings, ShieldCheck, ShoppingCart, Trash2, Users, X } from 'lucide-react'
+import { adjustStock, checkout as submitCheckout, createAccessRole, createCustomer, createProduct, createStoreUser, deleteCustomer, deleteProduct, deleteStoreUser, getAccessRoles, getCurrentSession, getDashboardSummary, getStoreSettings, listCustomers, listProducts, listSales, listStoreUsers, login, recordSalePayment, restockAtLocation, setRolePermissions, updateCustomer, updateProduct, updateStoreSettings, updateStoreUser, type AccessPermission, type AccessRole, type Customer, type DashboardSummary, type Product, type SaleRecord, type Session, type StockLocation, type StoreSettings, type StoreUser } from './api'
 import './App.css'
 import './login.css'
 
-type Section = 'Overview' | 'Products' | 'Inventory' | 'Sales' | 'Customers' | 'Reports' | 'Settings'
+type Section = 'Overview' | 'Products' | 'Inventory' | 'Sales' | 'Customers' | 'Reports' | 'Settings' | 'Access'
 const sections: { name: Section; icon: typeof LayoutDashboard }[] = [
-  { name: 'Overview', icon: LayoutDashboard }, { name: 'Products', icon: Archive }, { name: 'Inventory', icon: Boxes },
+  { name: 'Overview', icon: LayoutDashboard }, { name: 'Products', icon: Archive }, //{ name: 'Inventory', icon: Boxes },
   { name: 'Sales', icon: ShoppingCart }, { name: 'Customers', icon: Users }, { name: 'Reports', icon: ChartNoAxesCombined },
+  { name: 'Access', icon: ShieldCheck },
 ]
 function App() {
   const [section, setSection] = useState<Section>('Overview')
@@ -23,6 +24,12 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [query, setQuery] = useState('')
+  const [productStockFilter, setProductStockFilter] = useState('all')
+  const [productCategoryFilter, setProductCategoryFilter] = useState('all')
+  const [salesQuery, setSalesQuery] = useState('')
+  const [salesPaymentFilter, setSalesPaymentFilter] = useState('all')
+  const [salesDateFilter, setSalesDateFilter] = useState('all')
+  const [customerQuery, setCustomerQuery] = useState('')
   const [showProductForm, setShowProductForm] = useState(false)
   const [showCustomerForm, setShowCustomerForm] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
@@ -32,6 +39,7 @@ function App() {
   const [saleCustomerId, setSaleCustomerId] = useState('')
   const [paymentAmount, setPaymentAmount] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [discountInput, setDiscountInput] = useState('')
   const [paymentSale, setPaymentSale] = useState<SaleRecord | null>(null)
   const [paymentEntry, setPaymentEntry] = useState('')
   const [cart, setCart] = useState<Record<string, number>>({})
@@ -39,27 +47,65 @@ function App() {
   const [loginError, setLoginError] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [accessRoles, setAccessRoles] = useState<AccessRole[]>([])
+  const [accessPermissions, setAccessPermissions] = useState<AccessPermission[]>([])
+  const [storeUsers, setStoreUsers] = useState<StoreUser[]>([])
+  const [editingUser, setEditingUser] = useState<StoreUser | null>(null)
+  const [selectedRoleId, setSelectedRoleId] = useState('')
+  const [rolePermissionKeys, setRolePermissionKeys] = useState<string[]>([])
+  const [newRoleName, setNewRoleName] = useState('')
   const money = useMemo(() => new Intl.NumberFormat(settings.currency === 'PKR' ? 'en-PK' : 'en-US', { style: 'currency', currency: settings.currency }), [settings.currency])
   const chartMoney = useMemo(() => new Intl.NumberFormat(settings.currency === 'PKR' ? 'en-PK' : 'en-US', { style: 'currency', currency: settings.currency, notation: 'compact', maximumFractionDigits: 0 }), [settings.currency])
   const todayLabel = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: settings.timezone }).format(new Date()).toUpperCase()
   const matches = useMemo(() => products.filter((p) => `${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(query.toLowerCase())), [products, query])
+  const filteredProducts = useMemo(() => matches.filter((product) => {
+    const stockMatches = productStockFilter === 'all' || (productStockFilter === 'in-stock' && product.stock > 8) || (productStockFilter === 'low-stock' && product.stock > 0 && product.stock <= 8) || (productStockFilter === 'out-of-stock' && product.stock === 0)
+    return stockMatches && (productCategoryFilter === 'all' || product.category === productCategoryFilter)
+  }), [matches, productStockFilter, productCategoryFilter])
+  const filteredSales = useMemo(() => sales.filter((sale) => {
+    const term = salesQuery.toLowerCase()
+    const textMatches = `${sale.receiptNumber} ${sale.customer ? `${sale.customer.firstName} ${sale.customer.lastName}` : 'Walk-in'}`.toLowerCase().includes(term)
+    const statusMatches = salesPaymentFilter === 'all' || sale.paymentStatus === salesPaymentFilter
+    const age = Date.now() - new Date(sale.soldAt).getTime()
+    const dateMatches = salesDateFilter === 'all' || (salesDateFilter === 'today' && new Date(sale.soldAt).toDateString() === new Date().toDateString()) || (salesDateFilter === '7-days' && age <= 7 * 86400000) || (salesDateFilter === '30-days' && age <= 30 * 86400000)
+    return textMatches && statusMatches && dateMatches
+  }), [sales, salesQuery, salesPaymentFilter, salesDateFilter])
+  const filteredCustomers = useMemo(() => customers.filter((customer) => `${customer.firstName} ${customer.lastName} ${customer.email ?? ''} ${customer.phone ?? ''}`.toLowerCase().includes(customerQuery.toLowerCase())), [customers, customerQuery])
+  const customerPendingTotal = customers.reduce((sum, customer) => sum + customer.pendingAmount, 0)
+  const can = (permission: string) => session?.user.permissions?.includes(permission) ?? false
+  const canViewProducts = can('products.read') || can('products.write') || can('inventory.adjust')
+  const isOwner = session?.user.isOwner ?? false
+  const canAccessSection = (name: Section) => name === 'Overview'
+    || (name === 'Products' && canViewProducts)
+    || (name === 'Sales' && (can('sales.read') || can('sales.create')))
+    || (name === 'Customers' && (can('customers.read') || can('customers.write')))
+    || (name === 'Reports' && can('reports.read'))
+    || (name === 'Settings' && can('settings.write'))
+    || (name === 'Access' && can('users.write'))
   const count = Object.values(cart).reduce((sum, itemCount) => sum + itemCount, 0)
-  const total = products.reduce((sum, p) => {
-    const subtotalCents = Math.round(p.price * 100) * (cart[p.id] ?? 0)
-    const taxCents = Math.round(subtotalCents * Math.round(p.taxRate * 1000) / 100000)
-    return sum + (subtotalCents + taxCents) / 100
+  const saleSubtotalCents = products.reduce((sum, product) => sum + Math.round(product.price * 100) * (cart[product.id] ?? 0), 0)
+  const saleDiscountCents = saleCustomerId ? Math.min(Math.round(Number(discountInput || 0) * 100), saleSubtotalCents) : 0
+  let remainingCartDiscount = saleDiscountCents
+  const cartProducts = products.filter((product) => (cart[product.id] ?? 0) > 0)
+  const saleTaxCents = cartProducts.reduce((sum, product, index) => {
+    const quantity = cart[product.id]
+    const lineSubtotal = Math.round(product.price * 100) * quantity
+    const lineDiscount = index === products.length - 1 ? remainingCartDiscount : Math.min(remainingCartDiscount, Math.round(saleDiscountCents * lineSubtotal / Math.max(1, saleSubtotalCents)))
+    remainingCartDiscount -= lineDiscount
+    return sum + Math.round((lineSubtotal - lineDiscount) * Math.round(product.taxRate * 1000) / 100000)
   }, 0)
+  const total = (saleSubtotalCents - saleDiscountCents + saleTaxCents) / 100
   const alert = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 2500) }
   const refreshData = async (token: string) => {
-    const [rows, summary] = await Promise.all([listProducts(token), getDashboardSummary(token)])
+    const [rows, summary] = await Promise.all([canViewProducts ? listProducts(token) : Promise.resolve([]), can('reports.read') ? getDashboardSummary(token) : Promise.resolve(null)])
     setProducts(rows)
-    setDashboard(summary)
+    if (summary) setDashboard(summary)
   }
 
   useEffect(() => {
     if (!session) return
     let active = true
-    Promise.all([listProducts(session.accessToken), getDashboardSummary(session.accessToken), getStoreSettings(session.accessToken)]).then(([rows, summary, storeSettings]) => {
+    Promise.all([canViewProducts ? listProducts(session.accessToken) : Promise.resolve([]), can('reports.read') ? getDashboardSummary(session.accessToken) : Promise.resolve(null), getStoreSettings(session.accessToken)]).then(([rows, summary, storeSettings]) => {
       if (active) {
         setProducts(rows)
         setDashboard(summary)
@@ -78,14 +124,57 @@ function App() {
   }, [session])
 
   useEffect(() => {
-    if (!session || !['Customers', 'Settings', 'Sales'].includes(section)) return
-    listCustomers(session.accessToken).then(setCustomers).catch((error: unknown) => {
+    if (!session) return
+    let active = true
+    const refreshPermissions = async () => {
+      try {
+        const user = await getCurrentSession(session.accessToken)
+        if (!active) return
+        setSession((current) => {
+          if (!current || current.accessToken !== session.accessToken || JSON.stringify(current.user) === JSON.stringify(user)) return current
+          const updated = { ...current, user }
+          localStorage.setItem('stockroom-session', JSON.stringify(updated))
+          return updated
+        })
+      } catch (error) {
+        if (!active || !(error instanceof Error) || !/401|expired|no longer active/i.test(error.message)) return
+        localStorage.removeItem('stockroom-session')
+        setSession(null)
+      }
+    }
+    const refreshOnFocus = () => { void refreshPermissions() }
+    void refreshPermissions()
+    window.addEventListener('focus', refreshOnFocus)
+    const interval = window.setInterval(refreshOnFocus, 30000)
+    return () => {
+      active = false
+      window.removeEventListener('focus', refreshOnFocus)
+      window.clearInterval(interval)
+    }
+  }, [session?.accessToken])
+
+  useEffect(() => {
+    if (!canAccessSection(section)) setSection('Overview')
+  }, [isOwner, section, session?.user.permissions])
+
+  useEffect(() => {
+    if (!session || !['Customers', 'Settings', 'Sales', 'Access'].includes(section)) return
+    if (can('customers.read') || can('customers.write')) listCustomers(session.accessToken).then(setCustomers).catch((error: unknown) => {
       alert(error instanceof Error ? error.message : 'Could not load customers')
     })
-    if (section === 'Sales') listSales(session.accessToken).then(setSales).catch((error: unknown) => {
+    if (section === 'Sales' && can('sales.read')) listSales(session.accessToken).then(setSales).catch((error: unknown) => {
       alert(error instanceof Error ? error.message : 'Could not load sales')
     })
-  }, [session, section])
+    if (section === 'Access' && can('users.write')) Promise.all([getAccessRoles(session.accessToken), listStoreUsers(session.accessToken)]).then(([access, users]) => {
+      setAccessRoles(access.roles)
+      setAccessPermissions(access.permissions)
+      setStoreUsers(users)
+      const currentRole = access.roles.find((role) => role.id === selectedRoleId)
+      const selectedRole = currentRole ?? access.roles.find((role) => role.isEditable) ?? access.roles[0]
+      setSelectedRoleId(selectedRole?.id ?? '')
+      setRolePermissionKeys(selectedRole?.permissionKeys ?? [])
+    }).catch((error: unknown) => alert(error instanceof Error ? error.message : 'Could not load access settings'))
+  }, [session, section, isOwner])
 
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -244,12 +333,14 @@ function App() {
         useDefaultCustomer: false,
         amountReceived: paymentAmount === '' ? undefined : Number(paymentAmount),
         paymentMethod,
+        discountAmount: saleCustomerId && discountInput !== '' ? Number(discountInput) : undefined,
       })
       await refreshData(session.accessToken)
       const updatedSales = await listSales(session.accessToken)
       setSales(updatedSales)
       setCart({})
       setPaymentAmount('')
+      setDiscountInput('')
       setPosSearch('')
       setPosMode(false)
       alert(`Sale ${sale.receiptNumber} recorded · ${money.format(Number(sale.paidAmount))} paid · ${money.format(Number(sale.dueAmount))} due`)
@@ -276,6 +367,99 @@ function App() {
       setBusy(false)
     }
   }
+  const addTeamUser = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!session) return
+    const data = new FormData(event.currentTarget)
+    setBusy(true)
+    try {
+      await createStoreUser(session.accessToken, {
+        firstName: String(data.get('firstName') ?? '').trim(),
+        lastName: String(data.get('lastName') ?? '').trim(),
+        email: String(data.get('email') ?? '').trim(),
+        password: String(data.get('password') ?? ''),
+        roleId: String(data.get('roleId') ?? ''),
+      })
+      setStoreUsers(await listStoreUsers(session.accessToken))
+      event.currentTarget.reset()
+      alert('Team user created')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Could not create team user')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const saveTeamUser = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!session || !editingUser) return
+    const data = new FormData(event.currentTarget)
+    const passwordValue = String(data.get('password') ?? '')
+    setBusy(true)
+    try {
+      await updateStoreUser(session.accessToken, editingUser.id, {
+        firstName: String(data.get('firstName') ?? '').trim(),
+        lastName: String(data.get('lastName') ?? '').trim(),
+        email: String(data.get('email') ?? '').trim(),
+        roleId: String(data.get('roleId') ?? ''),
+        ...(passwordValue ? { password: passwordValue } : {}),
+      })
+      setStoreUsers(await listStoreUsers(session.accessToken))
+      setEditingUser(null)
+      alert('Team user updated')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Could not update team user')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const removeTeamUser = async (user: StoreUser) => {
+    if (!session || !window.confirm(`Remove ${user.firstName} ${user.lastName} from this store?`)) return
+    setBusy(true)
+    try {
+      await deleteStoreUser(session.accessToken, user.id)
+      setStoreUsers((current) => current.filter((item) => item.id !== user.id))
+      alert('Team user removed from this store')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Could not remove team user')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const addTeamRole = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!session) return
+    const name = newRoleName.trim()
+    if (!name) return
+    setBusy(true)
+    try {
+      const role = await createAccessRole(session.accessToken, { name, description: '', permissionKeys: [] })
+      const access = await getAccessRoles(session.accessToken)
+      setAccessRoles(access.roles)
+      setAccessPermissions(access.permissions)
+      setSelectedRoleId(role.id)
+      setRolePermissionKeys([])
+      setNewRoleName('')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Could not create role')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const saveTeamRolePermissions = async () => {
+    if (!session || !selectedRoleId) return
+    setBusy(true)
+    try {
+      await setRolePermissions(session.accessToken, selectedRoleId, rolePermissionKeys)
+      const access = await getAccessRoles(session.accessToken)
+      setAccessRoles(access.roles)
+      setAccessPermissions(access.permissions)
+      alert('Role permissions saved')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Could not save role permissions')
+    } finally {
+      setBusy(false)
+    }
+  }
   const isProducts = section === 'Products' || section === 'Inventory'
   const heading = section === 'Overview' ? `Good morning, ${session?.user.name.split(' ')[0] ?? 'there'}` : section
 
@@ -285,15 +469,15 @@ function App() {
     <aside className="sidebar">
       <button className="brand" onClick={() => setSection('Overview')}><span className="brand-mark">s</span><span>stockroom<span className="brand-dot">.</span></span></button>
       <button className="store-switcher"><span className="store-avatar">{session.user.storeName.slice(0, 1)}</span><span className="store-meta"><strong>{session.user.storeName}</strong><small>{session.user.role}</small></span><ChevronDown size={15} /></button>
-      <div className="nav-label">WORKSPACE</div><nav>{sections.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${section === name ? 'active' : ''}`} onClick={() => setSection(name)}><Icon size={18} /><span>{name}</span>{name === 'Inventory' && <span className="nav-count">{products.length}</span>}</button>)}</nav>
-      <div className="nav-label preferences-label">PREFERENCES</div><button className={`nav-item ${section === 'Settings' ? 'active' : ''}`} onClick={() => setSection('Settings')}><Settings size={18} /><span>Settings</span></button>
+      <div className="nav-label">WORKSPACE</div><nav>{sections.filter(({ name }) => canAccessSection(name)).map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${section === name ? 'active' : ''}`} onClick={() => setSection(name)}><Icon size={18} /><span>{name}</span>{name === 'Inventory' && <span className="nav-count">{products.length}</span>}</button>)}</nav>
+      {canAccessSection('Settings') && <><div className="nav-label preferences-label">PREFERENCES</div><button className={`nav-item ${section === 'Settings' ? 'active' : ''}`} onClick={() => setSection('Settings')}><Settings size={18} /><span>Settings</span></button></>}
       <div className="sidebar-spacer" /><div className="help-box"><span className="help-mark">?</span><span><strong>Need a hand?</strong><small>Visit the help center</small></span><ArrowUpRight size={15} /></div>
       <button className="profile-row" onClick={signOut} title="Sign out"><span className="profile-avatar">{session.user.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span className="store-meta"><strong>{session.user.name}</strong><small>Sign out</small></span><span>•••</span></button>
     </aside>
     <main className="main-area">
       <header className="topbar"><div className="breadcrumb">Store <span>/</span> <strong>{section}</strong></div><div className="topbar-actions"><label className="global-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search products..." aria-label="Search products" /><kbd>⌘ K</kbd></label><button className="icon-button" aria-label="Notifications" onClick={() => alert('You’re all caught up')}><Bell size={18} /><i /></button><span className="topbar-date">{new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: settings.timezone }).format(new Date())}</span></div></header>
       <div className="page-content">
-        <div className="page-heading"><div><div className="eyebrow">{todayLabel} <i /></div><h1>{heading}</h1><p>{section === 'Overview' ? 'Here’s what’s happening at your store today.' : section === 'Sales' ? (posMode ? 'Build a sale, select a customer, and record payment.' : 'Sales history and outstanding customer balances.') : `${section} activity and store records.`}</p></div><div className="heading-actions"><button className="button button-secondary" onClick={exportCsv}><Download size={16} /> Export</button>{!['Reports', 'Settings'].includes(section) && <button className="button button-primary" disabled={busy} onClick={() => section === 'Sales' ? setPosMode((current) => { if (!current) { setSaleCustomerId(settings.defaultCustomerId ?? ''); setCart({}); setPaymentAmount('') } return !current }) : section === 'Customers' ? setShowCustomerForm(true) : setShowProductForm(true)}>{section === 'Sales' ? (posMode ? 'Sales list' : 'New sale') : <><Plus size={17} />{section === 'Customers' ? 'New customer' : 'New product'}</>}</button>}</div></div>
+        <div className="page-heading"><div><div className="eyebrow">{todayLabel} <i /></div><h1>{heading}</h1><p>{section === 'Overview' ? 'Here’s what’s happening at your store today.' : section === 'Sales' ? (posMode ? 'Build a sale, select a customer, and record payment.' : 'Sales history and outstanding customer balances.') : `${section} activity and store records.`}</p></div><div className="heading-actions">{canViewProducts && <button className="button button-secondary" onClick={exportCsv}><Download size={16} /> Export</button>}{((section === 'Sales' && can('sales.create')) || (section === 'Customers' && can('customers.write')) || ((section === 'Products' || section === 'Inventory') && can('products.write'))) && <button className="button button-primary" disabled={busy} onClick={() => section === 'Sales' ? setPosMode((current) => { if (!current) { setSaleCustomerId(settings.defaultCustomerId ?? ''); setCart({}); setPaymentAmount('') } return !current }) : section === 'Customers' ? setShowCustomerForm(true) : setShowProductForm(true)}>{section === 'Sales' ? (posMode ? 'Sales list' : 'New sale') : <><Plus size={17} />{section === 'Customers' ? 'New customer' : 'New product'}</>}</button>}</div></div>
         {section === 'Overview' && <>
           <section className="metric-grid"><Metric label="Sales today" value={dashboard ? money.format(dashboard.todaySales) : '—'} trend={undefined} context="Today to date" icon={<CircleDollarSign size={17} />} /><Metric label="Orders today" value={dashboard ? String(dashboard.todayOrderCount) : '—'} trend={undefined} context="Today to date" icon={<ClipboardList size={17} />} /><Metric label="Sales · 7 days" value={dashboard ? money.format(dashboard.weeklySales) : '—'} trend={dashboard?.grossSalesChange} icon={<CircleDollarSign size={17} />} /><Metric label="Orders · 7 days" value={dashboard ? String(dashboard.weeklyOrderCount) : '—'} trend={dashboard?.orderCountChange} icon={<ClipboardList size={17} />} /><Metric label="Sales this month" value={dashboard ? money.format(dashboard.monthlySales) : '—'} trend={undefined} context="Month to date" icon={<CircleDollarSign size={17} />} /><Metric label="Orders this month" value={dashboard ? String(dashboard.monthlyOrderCount) : '—'} trend={undefined} context="Month to date" icon={<ClipboardList size={17} />} /><Metric label="Items sold · 7 days" value={dashboard ? String(dashboard.itemsSold) : '—'} trend={dashboard?.itemsSoldChange} icon={<Boxes size={17} />} /><Metric label="Average order · 7 days" value={dashboard ? money.format(dashboard.averageOrder) : '—'} trend={dashboard?.averageOrderChange} icon={<ChartNoAxesCombined size={17} />} /></section>
           <section className="overview-grid"><div className="panel sales-panel"><div className="panel-heading"><div><h2>Sales overview</h2><p>Completed sales · last 7 days</p></div><span className="select-button">Last 7 days <ChevronDown size={14} /></span></div><div className="chart-legend"><span><i className="legend-current" />This week</span><span><i className="legend-previous" />Previous week</span><strong>{money.format(dashboard?.grossSales ?? 0)} {dashboard?.grossSalesChange != null && <small>{dashboard.grossSalesChange >= 0 ? '+' : ''}{dashboard.grossSalesChange.toFixed(1)}%</small>}</strong></div><div className="chart-area"><div className="chart-y-labels">{[1000, 750, 500, 250, 0].map((amount) => <span key={amount}>{chartMoney.format(amount)}</span>)}</div><div className="chart-plot"><div className="chart-grid-lines"><i /><i /><i /><i /><i /></div><div className="bar-chart">{(dashboard?.dailySales ?? []).map((day) => { const max = Math.max(1, ...dashboard!.dailySales.flatMap((item) => [item.total, item.previousTotal])); return <div className="bar-group" key={day.date} title={`${day.date}: ${money.format(day.total)} this week, ${money.format(day.previousTotal)} previous week`}><span className="bar last-week" style={{ height: `${Math.max(2, day.previousTotal / max * 100)}%` }} /><span className="bar this-week" style={{ height: `${Math.max(2, day.total / max * 100)}%` }} /></div> })}</div><div className="chart-x-labels">{(dashboard?.dailySales ?? []).map((day) => <span key={day.date}>{day.label}</span>)}</div></div></div></div>
@@ -301,17 +485,19 @@ function App() {
           <section className="panel product-panel"><div className="panel-heading"><div><h2>Products to watch</h2><p>Items that may need your attention</p></div><button className="text-link" onClick={() => setSection('Inventory')}>View all inventory <ArrowUpRight size={14} /></button></div>{loading ? <div className="empty-state">Loading inventory…</div> : <ProductTable products={matches.filter((p) => p.stock <= 8).slice(0, 4)} money={money} onRestock={(id) => restock(id, 'DISP', 10)} onAdjust={adjustQuantity} />}</section>
           <section className="bottom-grid"><div className="panel activity-panel"><div className="panel-heading"><div><h2>Recent sales</h2><p>Latest transactions recorded by the API</p></div></div>{dashboard?.recentSales.length ? dashboard.recentSales.slice(0, 3).map((sale) => <Activity key={sale.receiptNumber} initials={sale.customerName.split(' ').map((part) => part[0]).join('').slice(0, 2)} name={sale.customerName} action={`receipt ${sale.receiptNumber}`} time={new Date(sale.soldAt).toLocaleString()} amount={money.format(sale.total)} />) : <div className="empty-state">No sales recorded yet.</div>}</div><div className="panel quick-panel"><div className="panel-heading"><div><h2>Quick actions</h2><p>Store operations</p></div></div><button className="quick-action" onClick={() => setSection('Sales')}><ShoppingCart size={18} /><span><strong>New sale</strong><small>Ring up a customer</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={() => setShowProductForm(true)}><PackagePlus size={18} /><span><strong>Add product</strong><small>Grow your catalog</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={exportCsv}><Download size={18} /><span><strong>Export data</strong><small>Download as CSV</small></span><ArrowUpRight size={15} /></button></div></section>
         </>}
-        {isProducts && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><div className="table-filters"><button className="filter-chip selected">All items <span>{products.length}</span></button><button className="filter-chip" onClick={() => setQuery('')}>Active</button><button className="filter-chip" onClick={() => setProducts((current) => [...current].sort((a, b) => a.stock - b.stock))}>Stock level <ChevronDown size={14} /></button></div><button className="button button-secondary compact" onClick={exportCsv}><Download size={15} /> Export CSV</button></div>{loading ? <div className="empty-state">Loading products…</div> : <ProductTable products={matches} money={money} onEdit={(product) => { setEditingProduct(product); setShowProductForm(true) }} onDelete={removeProduct} onRestock={(id) => { void restock(id, 'DISP', 10) }} onAdjust={adjustQuantity} />}<div className="table-footer"><span>Showing <strong>{matches.length}</strong> of <strong>{products.length}</strong> products</span><button disabled>Previous　 1　 Next</button></div></section>}
-        {section === 'Sales' && !posMode && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><strong>Recent sales <span className="nav-count">{sales.length}</span></strong><label className="global-search sales-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search receipt or customer" aria-label="Search sales" /></label></div><div className="table-scroll"><table className="product-table sales-table"><thead><tr><th>RECEIPT</th><th>DATE</th><th>CUSTOMER</th><th>ITEMS</th><th>TOTAL</th><th>PAID</th><th>OUTSTANDING</th><th>PAYMENT</th><th /></tr></thead><tbody>{sales.filter((sale) => `${sale.receiptNumber} ${sale.customer ? `${sale.customer.firstName} ${sale.customer.lastName}` : 'Walk-in'}`.toLowerCase().includes(query.toLowerCase())).map((sale) => <tr key={sale.id}><td><strong>{sale.receiptNumber}</strong></td><td>{new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: settings.timezone }).format(new Date(sale.soldAt))}</td><td>{sale.customer ? `${sale.customer.firstName} ${sale.customer.lastName}` : 'Walk-in customer'}</td><td>{sale.items.reduce((sum, item) => sum + item.quantity, 0)} items</td><td className="price-cell">{money.format(sale.totalAmount)}</td><td>{money.format(sale.paidAmount)}</td><td className="price-cell">{money.format(sale.dueAmount)}</td><td><span className={`status-pill ${sale.paymentStatus === 'paid' ? 'in-stock' : sale.paymentStatus === 'partial' ? 'low-stock' : 'out-of-stock'}`}>{sale.paymentStatus === 'paid' ? 'Paid' : sale.paymentStatus === 'partial' ? 'Partially paid' : 'Unpaid'}</span></td><td>{sale.dueAmount > 0 && <button className="button button-secondary compact" onClick={() => { setPaymentSale(sale); setPaymentEntry(sale.dueAmount.toFixed(2)) }}>Record payment</button>}</td></tr>)}</tbody></table>{sales.length === 0 && <div className="empty-state">No sales recorded yet. Start a sale to see it here.</div>}</div></section>}
-        {section === 'Sales' && posMode && <section className="pos-layout"><div className="panel pos-products"><div className="panel-heading"><div><h2>Find products</h2><p>Search by product name, SKU, or category.</p></div></div><label className="pos-search"><Search size={16} /><input autoFocus value={posSearch} onChange={(event) => setPosSearch(event.target.value)} placeholder="Search products to add" /></label><div className="pos-product-list">{products.filter((product) => `${product.name} ${product.sku} ${product.category}`.toLowerCase().includes(posSearch.toLowerCase())).map((product) => <div className="pos-product-row" key={product.id}><span className="product-swatch">{product.name.slice(0, 1)}</span><div className="pos-product-info"><strong>{product.name}</strong><small>{product.sku} · {product.stock} in stock</small></div><strong>{money.format(product.price)}</strong><button className="row-action" title="Add to sale" aria-label={`Add ${product.name} to sale`} disabled={product.stock <= (cart[product.id] ?? 0)} onClick={() => setCart((current) => ({ ...current, [product.id]: (current[product.id] ?? 0) + 1 }))}><Plus size={15} /></button></div>)}{products.length === 0 && <div className="empty-state">No products in the catalog.</div>}</div></div><div className="panel pos-checkout"><div className="panel-heading"><div><h2>Current sale</h2><p>{count} items</p></div><button className="text-link" onClick={() => setCart({})}>Clear sale</button></div><label>Customer<select value={saleCustomerId} onChange={(event) => setSaleCustomerId(event.target.value)}><option value="">Walk-in customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.firstName} {customer.lastName}</option>)}</select></label><div className="pos-cart-list">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => { const product = products.find((item) => item.id === id); if (!product) return null; return <div className="pos-cart-row" key={id}><div><strong>{product.name}</strong><small>{quantity} × {money.format(product.price)}</small></div><strong>{money.format((product.price * quantity) * (1 + product.taxRate / 100))}</strong><div className="quantity-actions"><button className="row-action" aria-label={`Remove one ${product.name}`} onClick={() => setCart((current) => ({ ...current, [id]: quantity <= 1 ? 0 : quantity - 1 }))}>−</button><button className="row-action" aria-label={`Add one ${product.name}`} disabled={quantity >= product.stock} onClick={() => setCart((current) => ({ ...current, [id]: quantity + 1 }))}><Plus size={13} /></button></div></div>})}{count === 0 && <div className="empty-state">Search for a product to begin.</div>}</div><div className="pos-total"><span>Sale total</span><strong>{money.format(total)}</strong></div><div className="modal-row"><label>Amount received<input type="number" min="0" max={total} step="0.01" placeholder={total.toFixed(2)} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></label><label>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="gift_card">Gift card</option><option value="store_credit">Store credit</option><option value="other">Other</option></select></label></div><div className="pos-balance">Outstanding after payment <strong>{money.format(Math.max(0, total - (paymentAmount === '' ? total : Number(paymentAmount) || 0)))}</strong></div><button className="button button-primary pos-submit" disabled={!count || busy || (paymentAmount !== '' && (Number(paymentAmount) < 0 || Number(paymentAmount) > total))} onClick={checkout}>Complete sale · {money.format(total)} <ArrowUpRight size={15} /></button></div></section>}
-        {section === 'Customers' && <section className="panel product-panel page-table-panel"><div className="table-scroll"><table className="product-table"><thead><tr><th>NAME</th><th>PHONE</th><th>EMAIL</th><th>NOTES</th><th /></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td><strong>{customer.firstName} {customer.lastName}</strong></td><td>{customer.phone || '—'}</td><td>{customer.email || '—'}</td><td>{customer.notes || '—'}</td><td className="row-actions"><button className="row-action" title="Edit customer" aria-label={`Edit ${customer.firstName} ${customer.lastName}`} onClick={() => { setEditingCustomer(customer); setShowCustomerForm(true) }}><Pencil size={14} /></button><button className="row-action danger-action" title="Delete customer" aria-label={`Delete ${customer.firstName} ${customer.lastName}`} onClick={() => void removeCustomer(customer)}><Trash2 size={14} /></button></td></tr>)}</tbody></table>{customers.length === 0 && <div className="empty-state"><Users size={19} />No customers yet.</div>}</div></section>}
+        {isProducts && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><div className="table-filters"><button className={`filter-chip ${productStockFilter === 'all' ? 'selected' : ''}`} onClick={() => setProductStockFilter('all')}>All items <span>{products.length}</span></button><button className={`filter-chip ${productStockFilter === 'in-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('in-stock')}>In stock</button><button className={`filter-chip ${productStockFilter === 'low-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('low-stock')}>Low stock</button><button className={`filter-chip ${productStockFilter === 'out-of-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('out-of-stock')}>Out of stock</button><select aria-label="Filter by category" value={productCategoryFilter} onChange={(event) => setProductCategoryFilter(event.target.value)}><option value="all">All categories</option>{[...new Set(products.map((product) => product.category))].sort().map((category) => <option key={category} value={category}>{category}</option>)}</select></div><button className="button button-secondary compact" onClick={exportCsv}><Download size={15} /> Export CSV</button></div>{loading ? <div className="empty-state">Loading products…</div> : <ProductTable products={filteredProducts} money={money} onEdit={(product) => { setEditingProduct(product); setShowProductForm(true) }} onDelete={removeProduct} onRestock={(id) => { void restock(id, 'DISP', 10) }} onAdjust={adjustQuantity} />}<div className="table-footer"><span>Showing <strong>{filteredProducts.length}</strong> of <strong>{products.length}</strong> products</span></div></section>}
+        {section === 'Sales' && !posMode && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><strong>Recent sales <span className="nav-count">{filteredSales.length}</span></strong><label className="global-search sales-search"><Search size={15} /><input value={salesQuery} onChange={(event) => setSalesQuery(event.target.value)} placeholder="Search receipt or customer" aria-label="Search sales" /></label><select aria-label="Filter sales by payment status" value={salesPaymentFilter} onChange={(event) => setSalesPaymentFilter(event.target.value)}><option value="all">All payment statuses</option><option value="paid">Paid</option><option value="partial">Partially paid</option><option value="unpaid">Unpaid</option></select><select aria-label="Filter sales by date" value={salesDateFilter} onChange={(event) => setSalesDateFilter(event.target.value)}><option value="all">Any date</option><option value="today">Today</option><option value="7-days">Last 7 days</option><option value="30-days">Last 30 days</option></select></div><div className="table-scroll"><table className="product-table sales-table"><thead><tr><th>RECEIPT</th><th>DATE</th><th>CUSTOMER</th><th>ITEMS</th><th>TOTAL</th><th>PAID</th><th>OUTSTANDING</th><th>PAYMENT</th><th /></tr></thead><tbody>{filteredSales.map((sale) => <tr key={sale.id}><td><strong>{sale.receiptNumber}</strong></td><td>{new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: settings.timezone }).format(new Date(sale.soldAt))}</td><td>{sale.customer ? `${sale.customer.firstName} ${sale.customer.lastName}` : 'Walk-in customer'}</td><td>{sale.items.reduce((sum, item) => sum + item.quantity, 0)} items</td><td className="price-cell">{money.format(sale.totalAmount)}</td><td>{money.format(sale.paidAmount)}</td><td className="price-cell">{money.format(sale.dueAmount)}</td><td><span className={`status-pill ${sale.paymentStatus === 'paid' ? 'in-stock' : sale.paymentStatus === 'partial' ? 'low-stock' : 'out-of-stock'}`}>{sale.paymentStatus === 'paid' ? 'Paid' : sale.paymentStatus === 'partial' ? 'Partially paid' : 'Unpaid'}</span></td><td>{sale.dueAmount > 0 && <button className="button button-secondary compact" onClick={() => { setPaymentSale(sale); setPaymentEntry(sale.dueAmount.toFixed(2)) }}>Record payment</button>}</td></tr>)}</tbody></table>{filteredSales.length === 0 && <div className="empty-state">No matching sales.</div>}</div></section>}
+        {section === 'Sales' && posMode && <section className="pos-layout"><div className="panel pos-products"><div className="panel-heading"><div><h2>Find products</h2><p>Search by product name, SKU, or category.</p></div></div><label className="pos-search"><Search size={16} /><input autoFocus value={posSearch} onChange={(event) => setPosSearch(event.target.value)} placeholder="Search products to add" /></label><div className="pos-product-list">{products.filter((product) => `${product.name} ${product.sku} ${product.category}`.toLowerCase().includes(posSearch.toLowerCase())).map((product) => <div className="pos-product-row" key={product.id}><span className="product-swatch">{product.name.slice(0, 1)}</span><div className="pos-product-info"><strong>{product.name}</strong><small>{product.sku} · {product.stock} in stock</small></div><strong>{money.format(product.price)}</strong><button className="row-action" title="Add to sale" aria-label={`Add ${product.name} to sale`} disabled={product.stock <= (cart[product.id] ?? 0)} onClick={() => setCart((current) => ({ ...current, [product.id]: (cart[product.id] ?? 0) + 1 }))}><Plus size={15} /></button></div>)}{products.length === 0 && <div className="empty-state">No products in the catalog.</div>}</div></div><div className="panel pos-checkout"><div className="panel-heading"><div><h2>Current sale</h2><p>{count} items</p></div><button className="text-link" onClick={() => setCart({})}>Clear sale</button></div><label>Customer<select value={saleCustomerId} onChange={(event) => { setSaleCustomerId(event.target.value); if (!event.target.value) setDiscountInput('') }}><option value="">Walk-in customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.firstName} {customer.lastName}</option>)}</select></label>{saleCustomerId && <label>Customer discount<input type="number" min="0" max={saleSubtotalCents / 100} step="0.01" value={discountInput} onChange={(event) => setDiscountInput(event.target.value)} placeholder="0.00" /></label>}<div className="pos-cart-list">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => { const product = products.find((item) => item.id === id); if (!product) return null; return <div className="pos-cart-row" key={id}><div><strong>{product.name}</strong><small>{quantity} × {money.format(product.price)}</small></div><strong>{money.format((product.price * quantity) * (1 + product.taxRate / 100))}</strong><div className="quantity-actions"><button className="row-action" aria-label={`Remove one ${product.name}`} onClick={() => setCart((current) => ({ ...current, [id]: quantity <= 1 ? 0 : quantity - 1 }))}>−</button><button className="row-action" aria-label={`Add one ${product.name}`} disabled={quantity >= product.stock} onClick={() => setCart((current) => ({ ...current, [id]: quantity + 1 }))}><Plus size={13} /></button></div></div>})}{count === 0 && <div className="empty-state">Search for a product to begin.</div>}</div><div className="pos-total"><span>Sale total</span><strong>{money.format(total)}</strong></div><div className="modal-row"><label>Amount received<input type="number" min="0" max={total} step="0.01" placeholder={total.toFixed(2)} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></label><label>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="gift_card">Gift card</option><option value="store_credit">Store credit</option><option value="other">Other</option></select></label></div><div className="pos-balance">Outstanding after payment <strong>{money.format(Math.max(0, total - (paymentAmount === '' ? total : Number(paymentAmount) || 0)))}</strong></div><button className="button button-primary pos-submit" disabled={!count || busy || (paymentAmount !== '' && (Number(paymentAmount) < 0 || Number(paymentAmount) > total))} onClick={checkout}>Complete sale · {money.format(total)} <ArrowUpRight size={15} /></button></div></section>}
+        {section === 'Customers' && canAccessSection('Customers') && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><strong>Customer balances <span className="nav-count">{customers.length}</span></strong><label className="global-search sales-search"><Search size={15} /><input value={customerQuery} onChange={(event) => setCustomerQuery(event.target.value)} placeholder="Search customers" aria-label="Search customers" /></label><strong>Pending total {money.format(customerPendingTotal)}</strong></div><div className="table-scroll"><table className="product-table"><thead><tr><th>NAME</th><th>PHONE</th><th>EMAIL</th><th>NOTES</th><th>AMOUNT PENDING</th>{can('customers.write') && <th />}</tr></thead><tbody>{filteredCustomers.map((customer) => <tr key={customer.id}><td><strong>{customer.firstName} {customer.lastName}</strong></td><td>{customer.phone || '—'}</td><td>{customer.email || '—'}</td><td>{customer.notes || '—'}</td><td className="price-cell">{money.format(customer.pendingAmount)}</td>{can('customers.write') && <td className="row-actions"><button className="row-action" title="Edit customer" aria-label={`Edit ${customer.firstName} ${customer.lastName}`} onClick={() => { setEditingCustomer(customer); setShowCustomerForm(true) }}><Pencil size={14} /></button><button className="row-action danger-action" title="Delete customer" aria-label={`Delete ${customer.firstName} ${customer.lastName}`} onClick={() => void removeCustomer(customer)}><Trash2 size={14} /></button></td>}</tr>)}</tbody></table>{filteredCustomers.length === 0 && <div className="empty-state"><Users size={19} />No matching customers.</div>}</div></section>}
         {section === 'Reports' && <section className="report-grid"><Report label="Net sales this month" value={money.format(dashboard?.monthlySales ?? 0)} trend="Month to date" icon={<ChartNoAxesCombined size={18} />} /><Report label="Sell-through rate" value="—" trend="Requires sales history" icon={<Boxes size={18} />} /><Report label="Returning customers" value="—" trend="Customer analytics unavailable" icon={<Users size={18} />} down /><div className="panel report-note"><h2>Report exports</h2><p>Download your product catalog in spreadsheet-friendly CSV format.</p><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export product report</button></div></section>}
-        {section === 'Settings' && <form className="panel settings-panel" onSubmit={saveSettings}><div className="panel-heading"><div><h2>Store profile</h2><p>Business details used across receipts and reports.</p></div><button className="button button-primary" type="submit" disabled={busy}>Save changes</button></div><label>Store name<input value={settings.storeName} onChange={(event) => setSettings((current) => ({ ...current, storeName: event.target.value }))} required /></label><div className="settings-row"><label>Currency<select value={settings.currency} onChange={(event) => setSettings((current) => ({ ...current, currency: event.target.value }))}><option value="USD">USD · US Dollar</option><option value="EUR">EUR · Euro</option><option value="GBP">GBP · Pound Sterling</option><option value="PKR">PKR · Pakistani Rupee</option></select></label><label>Time zone<select value={settings.timezone} onChange={(event) => setSettings((current) => ({ ...current, timezone: event.target.value }))}><option value="UTC">UTC</option><option value="Asia/Karachi">Pakistan Standard Time · Asia/Karachi</option><option value="America/New_York">Eastern Time · New York</option><option value="America/Chicago">Central Time · Chicago</option><option value="America/Los_Angeles">Pacific Time · Los Angeles</option></select></label></div><hr /><div className="panel-heading"><div><h2>Checkout defaults</h2><p>Automatically attach this customer to sales unless another is selected.</p></div></div><label>Default customer<select value={settings.defaultCustomerId ?? ''} onChange={(event) => setSettings((current) => ({ ...current, defaultCustomerId: event.target.value || null }))}><option value="">No default customer · Walk-in</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.firstName} {customer.lastName}</option>)}</select></label><hr /><div className="panel-heading"><div><h2>Data & exports</h2><p>Keep a local copy of your product data.</p></div><button className="button button-secondary" type="button" onClick={exportCsv}><Download size={15} /> Export CSV</button></div></form>}
+        {section === 'Settings' && canAccessSection('Settings') && <form className="panel settings-panel" onSubmit={saveSettings}><div className="panel-heading"><div><h2>Store profile</h2><p>Business details used across receipts and reports.</p></div><button className="button button-primary" type="submit" disabled={busy}>Save changes</button></div><label>Store name<input value={settings.storeName} onChange={(event) => setSettings((current) => ({ ...current, storeName: event.target.value }))} required /></label><div className="settings-row"><label>Currency<select value={settings.currency} onChange={(event) => setSettings((current) => ({ ...current, currency: event.target.value }))}><option value="USD">USD · US Dollar</option><option value="EUR">EUR · Euro</option><option value="GBP">GBP · Pound Sterling</option><option value="PKR">PKR · Pakistani Rupee</option></select></label><label>Time zone<select value={settings.timezone} onChange={(event) => setSettings((current) => ({ ...current, timezone: event.target.value }))}><option value="UTC">UTC</option><option value="Asia/Karachi">Pakistan Standard Time · Asia/Karachi</option><option value="America/New_York">Eastern Time · New York</option><option value="America/Chicago">Central Time · Chicago</option><option value="America/Los_Angeles">Pacific Time · Los Angeles</option></select></label></div><hr /><div className="panel-heading"><div><h2>Checkout defaults</h2><p>Automatically attach this customer to sales unless another is selected.</p></div></div><label>Default customer<select value={settings.defaultCustomerId ?? ''} onChange={(event) => setSettings((current) => ({ ...current, defaultCustomerId: event.target.value || null }))}><option value="">No default customer · Walk-in</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.firstName} {customer.lastName}</option>)}</select></label><hr /><div className="panel-heading"><div><h2>Data & exports</h2><p>Keep a local copy of your product data.</p></div><button className="button button-secondary" type="button" onClick={exportCsv}><Download size={15} /> Export CSV</button></div></form>}
+        {section === 'Access' && canAccessSection('Access') && <section className="access-layout"><div className="panel access-panel"><div className="panel-heading"><div><h2>Store users</h2><p>Assign a role to each team member.</p></div></div><form className="settings-panel" onSubmit={addTeamUser}><div className="modal-row"><label>First name<input name="firstName" required /></label><label>Last name<input name="lastName" /></label></div><div className="modal-row"><label>Email<input name="email" type="email" required /></label><label>Temporary password<input name="password" type="password" minLength={12} required /></label></div><label>Role<select name="roleId" required>{accessRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label><button className="button button-primary" disabled={busy}><Plus size={16} />Create user</button></form><div className="table-scroll"><table className="product-table"><thead><tr><th>USER</th><th>EMAIL</th><th>ROLE</th><th>STATUS</th><th /></tr></thead><tbody>{storeUsers.map((user) => <tr key={user.id}><td><strong>{user.firstName} {user.lastName}</strong></td><td>{user.email}</td><td>{user.roleName}</td><td>{user.isActive ? 'Active' : 'Inactive'}</td><td className="row-actions"><button className="row-action" title="Edit user" aria-label={`Edit ${user.firstName} ${user.lastName}`} disabled={user.id === session.user.id} onClick={() => setEditingUser(user)}><Pencil size={14} /></button><button className="row-action danger-action" title="Remove user" aria-label={`Remove ${user.firstName} ${user.lastName}`} disabled={user.id === session.user.id} onClick={() => void removeTeamUser(user)}><Trash2 size={14} /></button></td></tr>)}</tbody></table></div></div><div className="panel access-panel"><div className="panel-heading"><div><h2>Roles & features</h2><p>Select a role to review or change its access.</p></div></div><form className="modal-row" onSubmit={addTeamRole}><label>New role<input value={newRoleName} onChange={(event) => setNewRoleName(event.target.value)} placeholder="Product entry" /></label><button className="button button-secondary" disabled={busy || !newRoleName.trim()}><Plus size={15} />Add role</button></form><label>Role<select value={selectedRoleId} onChange={(event) => { const role = accessRoles.find((item) => item.id === event.target.value); setSelectedRoleId(event.target.value); setRolePermissionKeys(role?.permissionKeys ?? []) }}>{accessRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{accessPermissions.map((permission) => <label className="permission-row" key={permission.key}><input type="checkbox" checked={rolePermissionKeys.includes(permission.key)} disabled={accessRoles.find((role) => role.id === selectedRoleId)?.isOwner} onChange={(event) => setRolePermissionKeys((current) => event.target.checked ? [...current, permission.key] : current.filter((key) => key !== permission.key))} /><span><strong>{permission.key}</strong><small>{permission.description}</small></span></label>)}<button className="button button-primary" disabled={busy || !selectedRoleId || accessRoles.find((role) => role.id === selectedRoleId)?.isOwner} onClick={() => void saveTeamRolePermissions()}>Save permissions</button></div></section>}
       </div>
       <footer className="app-footer"><span>© 2025 Stockroom, Inc.</span><span><i /> API connected</span><span>Version 1.0.0</span></footer>
     </main>
     {showProductForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setShowProductForm(false); setEditingProduct(null) } }}><form className="product-modal" onSubmit={addProduct}><div className="modal-heading"><div><span className="eyebrow">CATALOG</span><h2>{editingProduct ? 'Edit product' : 'Add a product'}</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => { setShowProductForm(false); setEditingProduct(null) }}><X size={18} /></button></div><label>Product name<input name="name" defaultValue={editingProduct?.name} placeholder="Mobile charger" autoFocus required /></label><div className="modal-row"><label>SKU<input name="sku" defaultValue={editingProduct?.sku} placeholder="M-01" required /></label><label>Category<input name="category" defaultValue={editingProduct?.category} placeholder="Mobile accessories" /></label></div><div className="modal-row"><label>Sale price (before tax)<input name="price" type="number" min="0" step="0.01" defaultValue={editingProduct?.price} required /></label><label>Cost price<input name="costPrice" type="number" min="0" step="0.01" defaultValue={editingProduct?.costPrice ?? 0} /></label></div><div className="modal-row"><label>Tax rate (%)<input name="taxRate" type="number" min="0" step="0.001" defaultValue={editingProduct?.taxRate ?? 0} /></label><label className="checkbox-field"><input name="inDemand" type="checkbox" defaultChecked={editingProduct?.inDemand ?? false} /><span>In demand</span></label></div><div className="modal-row"><label>Display<input name="qtyDisplay" type="number" min="0" step="1" defaultValue={editingProduct?.qtyDisplay ?? 0} /></label><label>Warehouse<input name="qtyWarehouse" type="number" min="0" step="1" defaultValue={editingProduct?.qtyWarehouse ?? 0} /></label></div><label>Home<input name="qtyHome" type="number" min="0" step="1" defaultValue={editingProduct?.qtyHome ?? 0} /></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => { setShowProductForm(false); setEditingProduct(null) }}>Cancel</button><button type="submit" className="button button-primary" disabled={busy}><Plus size={16} />{editingProduct ? 'Save product' : 'Add product'}</button></div></form></div>}
     {showCustomerForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setShowCustomerForm(false); setEditingCustomer(null) } }}><form className="product-modal" onSubmit={addCustomer}><div className="modal-heading"><div><span className="eyebrow">CUSTOMERS</span><h2>{editingCustomer ? 'Edit customer' : 'Add a customer'}</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => { setShowCustomerForm(false); setEditingCustomer(null) }}><X size={18} /></button></div><div className="modal-row"><label>First name<input name="firstName" defaultValue={editingCustomer?.firstName} autoFocus required /></label><label>Last name<input name="lastName" defaultValue={editingCustomer?.lastName} /></label></div><div className="modal-row"><label>Phone<input name="phone" type="tel" defaultValue={editingCustomer?.phone ?? ''} /></label><label>Email<input name="email" type="email" defaultValue={editingCustomer?.email ?? ''} /></label></div><label>Notes<input name="notes" defaultValue={editingCustomer?.notes ?? ''} /></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => { setShowCustomerForm(false); setEditingCustomer(null) }}>Cancel</button><button type="submit" className="button button-primary" disabled={busy}><Plus size={16} />{editingCustomer ? 'Save customer' : 'Add customer'}</button></div></form></div>}
+    {editingUser && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingUser(null) }}><form className="product-modal" onSubmit={saveTeamUser}><div className="modal-heading"><div><span className="eyebrow">STORE ACCESS</span><h2>Edit team user</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setEditingUser(null)}><X size={18} /></button></div><div className="modal-row"><label>First name<input name="firstName" defaultValue={editingUser.firstName} required /></label><label>Last name<input name="lastName" defaultValue={editingUser.lastName} /></label></div><label>Email<input name="email" type="email" defaultValue={editingUser.email} required /></label><label>New password<input name="password" type="password" minLength={12} placeholder="Leave blank to keep current password" /></label><label>Role<select name="roleId" defaultValue={editingUser.roleId} required>{accessRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setEditingUser(null)}>Cancel</button><button type="submit" className="button button-primary" disabled={busy}>Save user</button></div></form></div>}
     {paymentSale && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPaymentSale(null) }}><form className="product-modal" onSubmit={addPayment}><div className="modal-heading"><div><span className="eyebrow">PAYMENT</span><h2>Record payment</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setPaymentSale(null)}><X size={18} /></button></div><p className="payment-context">{paymentSale.receiptNumber} · {paymentSale.customer ? `${paymentSale.customer.firstName} ${paymentSale.customer.lastName}` : 'Walk-in customer'} · {money.format(paymentSale.dueAmount)} due</p><label>Amount received<input type="number" min="0.01" max={paymentSale.dueAmount} step="0.01" value={paymentEntry} onChange={(event) => setPaymentEntry(event.target.value)} required /></label><label>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="gift_card">Gift card</option><option value="store_credit">Store credit</option><option value="other">Other</option></select></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setPaymentSale(null)}>Cancel</button><button type="submit" className="button button-primary" disabled={busy || Number(paymentEntry) > paymentSale.dueAmount}>Save payment</button></div></form></div>}
     {notice && <div className="toast"><span>✓</span>{notice}</div>}
   </div>

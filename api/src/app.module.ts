@@ -2,6 +2,7 @@ import { BadRequestException, Body, ConflictException, Controller, Delete, Forbi
 import { IsArray, IsBoolean, IsEmail, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Min, MinLength, NotEquals, ValidateNested, validateOrReject } from 'class-validator'
 import { plainToInstance, Type } from 'class-transformer'
 import { randomBytes } from 'node:crypto'
+import { hash } from 'bcryptjs'
 import { PaymentMethod } from '@prisma/client'
 import { AuthService, JwtGuard, Session } from './auth'
 import { PrismaService } from './prisma.service'
@@ -67,6 +68,29 @@ class CheckoutBody {
   @IsOptional() @IsString() @Matches(/^[1-9]\d*$/) customerId?: string
   @IsOptional() @IsBoolean() useDefaultCustomer?: boolean
   @IsOptional() @IsNumber() @Min(0) amountReceived?: number
+  @IsOptional() @IsNumber() @Min(0) discountAmount?: number
+}
+class RoleBody {
+  @IsString() @MinLength(2) name!: string
+  @IsOptional() @IsString() description?: string
+  @IsArray() @IsString({ each: true }) permissionKeys!: string[]
+}
+class RolePermissionsBody {
+  @IsArray() @IsString({ each: true }) permissionKeys!: string[]
+}
+class CreateUserBody {
+  @IsEmail() email!: string
+  @IsString() @MinLength(12) password!: string
+  @IsString() @MinLength(1) firstName!: string
+  @IsOptional() @IsString() lastName?: string
+  @IsString() @Matches(/^[1-9]\d*$/) roleId!: string
+}
+class UpdateUserBody {
+  @IsOptional() @IsEmail() email?: string
+  @IsOptional() @IsString() @MinLength(1) firstName?: string
+  @IsOptional() @IsString() lastName?: string
+  @IsOptional() @IsString() @MinLength(12) password?: string
+  @IsOptional() @IsString() @Matches(/^[1-9]\d*$/) roleId?: string
 }
 class PaymentBody {
   @IsNumber() @Min(0.01) amount!: number
@@ -90,8 +114,32 @@ async function validateBody<T extends object>(type: new () => T, input: unknown)
   return dto
 }
 
-function requireRole(user: Session, roles: string[]) {
-  if (!roles.includes(user.role)) throw new ForbiddenException('Your store role cannot perform this action')
+async function requirePermission(prisma: PrismaService, user: Session, permissionKey: string) {
+  const membership = await prisma.storeUser.findUnique({
+    where: { storeId_userId: { storeId: BigInt(user.storeId), userId: BigInt(user.userId) } },
+    include: { role: { include: { permissions: { include: { permission: true } } } } },
+  })
+  if (!membership?.role.permissions.some(({ permission }) => permission.permissionKey === permissionKey)) {
+    throw new ForbiddenException('Your store role cannot perform this action')
+  }
+}
+
+async function requireAnyPermission(prisma: PrismaService, user: Session, permissionKeys: string[]) {
+  const membership = await prisma.storeUser.findUnique({
+    where: { storeId_userId: { storeId: BigInt(user.storeId), userId: BigInt(user.userId) } },
+    include: { role: { include: { permissions: { include: { permission: true } } } } },
+  })
+  if (!membership?.role.permissions.some(({ permission }) => permissionKeys.includes(permission.permissionKey))) {
+    throw new ForbiddenException('Your store role cannot perform this action')
+  }
+}
+
+async function requireOwner(prisma: PrismaService, user: Session) {
+  const membership = await prisma.storeUser.findUnique({
+    where: { storeId_userId: { storeId: BigInt(user.storeId), userId: BigInt(user.userId) } },
+    include: { role: { select: { isOwner: true } } },
+  })
+  if (!membership?.role.isOwner) throw new ForbiddenException('Only the store owner can manage access and settings')
 }
 
 function dateKeyInZone(date: Date, timezone: string) {
@@ -119,6 +167,7 @@ function addCalendarDays(date: Date, days: number) {
 class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}
   @Post('login') async login(@Body() body: unknown) { const dto = await validateBody(LoginBody, body); return this.auth.login(dto.email, dto.password) }
+  @Get('session') @UseGuards(JwtGuard) async current(@Req() req: { user: Session }) { return this.auth.current(req.user) }
 }
 
 @Controller('dashboard')
@@ -127,6 +176,7 @@ class DashboardController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   @Get('summary') async summary(@Req() req: { user: Session }) {
+    await requirePermission(this.prisma, req.user, 'reports.read')
     const storeId = BigInt(req.user.storeId)
     const now = new Date()
     const store = await this.prisma.store.findUniqueOrThrow({ where: { id: storeId }, select: { timezone: true } })
@@ -226,6 +276,7 @@ class DashboardController {
 class ProductsController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
   @Get() async list(@Req() req: { user: Session }) {
+    await requireAnyPermission(this.prisma, req.user, ['products.read', 'products.write', 'inventory.adjust'])
     const rows = await this.prisma.product.findMany({ where: { storeId: BigInt(req.user.storeId), deletedAt: null }, include: { category: true, inventories: { where: { storeId: BigInt(req.user.storeId) } } }, orderBy: { name: 'asc' } })
     return rows.map(({ inventories, costPrice, sellingPrice, category, ...product }) => {
       const inventory = inventories[0]
@@ -236,7 +287,7 @@ class ProductsController {
     })
   }
   @Post() async create(@Req() req: { user: Session }, @Body() body: unknown) {
-    requireRole(req.user, ['owner', 'manager'])
+    await requirePermission(this.prisma, req.user, 'products.write')
     const dto = await validateBody(ProductBody, body)
     const storeId = BigInt(req.user.storeId)
     return this.prisma.$transaction(async (tx) => {
@@ -252,7 +303,7 @@ class ProductsController {
     })
   }
   @Patch(':id') async update(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
-    requireRole(req.user, ['owner', 'manager'])
+    await requirePermission(this.prisma, req.user, 'products.write')
     const dto = await validateBody(ProductUpdateBody, body)
     const storeId = BigInt(req.user.storeId)
     const productId = parseDatabaseId(rawId)
@@ -297,7 +348,7 @@ class ProductsController {
     })
   }
   @Delete(':id') async remove(@Req() req: { user: Session }, @Param('id') rawId: string) {
-    requireRole(req.user, ['owner', 'manager'])
+    await requirePermission(this.prisma, req.user, 'products.write')
     const storeId = BigInt(req.user.storeId)
     const productId = parseDatabaseId(rawId)
     const result = await this.prisma.product.updateMany({ where: { id: productId, storeId, deletedAt: null }, data: { isActive: false, deletedAt: new Date() } })
@@ -305,7 +356,7 @@ class ProductsController {
     return { id: productId.toString(), deleted: true }
   }
   @Post(':id/restock') async restock(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
-    requireRole(req.user, ['owner', 'manager', 'staff'])
+    await requirePermission(this.prisma, req.user, 'inventory.adjust')
     const dto = await validateBody(RestockBody, body); const storeId = BigInt(req.user.storeId); const productId = parseDatabaseId(rawId)
     return this.prisma.$transaction(async (tx) => {
       const product = await tx.product.findFirst({ where: { id: productId, storeId, deletedAt: null } })
@@ -324,7 +375,7 @@ class ProductsController {
   }
 
   @Patch(':id/adjust-stock') async adjustStock(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
-    requireRole(req.user, ['owner', 'manager', 'staff'])
+    await requirePermission(this.prisma, req.user, 'inventory.adjust')
     const dto = await validateBody(AdjustStockBody, body)
     const storeId = BigInt(req.user.storeId)
     const productId = parseDatabaseId(rawId)
@@ -371,7 +422,7 @@ class SettingsController {
   }
 
   @Patch() async update(@Req() req: { user: Session }, @Body() body: unknown) {
-    requireRole(req.user, ['owner', 'manager'])
+    await requirePermission(this.prisma, req.user, 'settings.write')
     const dto = await validateBody(StoreSettingsBody, body)
     const storeId = BigInt(req.user.storeId)
     const defaultCustomerId = dto.defaultCustomerId
@@ -410,6 +461,7 @@ class SalesController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   @Get() async list(@Req() req: { user: Session }) {
+    await requirePermission(this.prisma, req.user, 'sales.read')
     const sales = await this.prisma.sale.findMany({
       where: { storeId: BigInt(req.user.storeId) },
       include: {
@@ -442,6 +494,7 @@ class SalesController {
   }
 
   @Post('checkout') async checkout(@Req() req: { user: Session }, @Body() body: unknown) {
+    await requirePermission(this.prisma, req.user, 'sales.create')
     const dto = await validateBody(CheckoutBody, body)
     if (!Array.isArray(dto.lines) || dto.lines.length === 0) throw new BadRequestException('At least one sale line is required')
     for (const line of dto.lines) await validateBody(CheckoutLine, line)
@@ -453,6 +506,7 @@ class SalesController {
         const customer = await tx.customer.findFirst({ where: { id: parseDatabaseId(customerId), storeId, deletedAt: null } })
         if (!customer) throw new NotFoundException('Customer not found in this store')
       }
+      if ((dto.discountAmount ?? 0) > 0 && !customerId) throw new BadRequestException('Discounts require a registered customer')
       const productIds = [...new Set(dto.lines.map((line) => parseDatabaseId(line.productId)))]
       const products = await tx.product.findMany({ where: { storeId, id: { in: productIds }, isActive: true, deletedAt: null } })
       if (products.length !== productIds.length) throw new NotFoundException('One or more products are unavailable')
@@ -464,14 +518,26 @@ class SalesController {
       })
       const toDecimal = (cents: number) => (cents / 100).toFixed(2)
       const subtotalCents = lines.reduce((sum, line) => sum + Math.round(Number(line.product.sellingPrice) * 100) * line.quantity, 0)
-      const taxCents = lines.reduce((sum, line) => sum + Math.round(Math.round(Number(line.product.sellingPrice) * 100) * line.quantity * Math.round(Number(line.product.taxRate) * 1000) / 100000), 0)
-      const totalCents = subtotalCents + taxCents
+      const discountCents = Math.round((dto.discountAmount ?? 0) * 100)
+      if (discountCents > subtotalCents) throw new BadRequestException('Discount cannot exceed the sale subtotal')
+      let remainingDiscountCents = discountCents
+      const discountedLines = lines.map((line, index) => {
+        const lineSubtotalCents = Math.round(Number(line.product.sellingPrice) * 100) * line.quantity
+        const lineDiscountCents = index === lines.length - 1
+          ? remainingDiscountCents
+          : Math.min(remainingDiscountCents, Math.round(discountCents * lineSubtotalCents / subtotalCents))
+        remainingDiscountCents -= lineDiscountCents
+        const taxableCents = lineSubtotalCents - lineDiscountCents
+        return { ...line, lineSubtotalCents, lineDiscountCents, taxableCents }
+      })
+      const taxCents = discountedLines.reduce((sum, line) => sum + Math.round(line.taxableCents * Math.round(Number(line.product.taxRate) * 1000) / 100000), 0)
+      const totalCents = subtotalCents - discountCents + taxCents
       if (totalCents <= 0) throw new BadRequestException('Sale total must be greater than zero')
       const receivedCents = dto.amountReceived === undefined ? totalCents : Math.round(dto.amountReceived * 100)
       if (receivedCents > totalCents) throw new BadRequestException('Amount received cannot exceed the sale total')
-      const items = lines.map(({ product, quantity }) => ({ productId: product.id, skuSnapshot: product.sku, nameSnapshot: product.name, quantity, unitPrice: toDecimal(Math.round(Number(product.sellingPrice) * 100)), taxRate: product.taxRate, lineTotal: toDecimal(Math.round(Number(product.sellingPrice) * 100) * quantity) }))
+      const items = discountedLines.map(({ product, quantity, taxableCents, lineDiscountCents }) => ({ productId: product.id, skuSnapshot: product.sku, nameSnapshot: product.name, quantity, unitPrice: toDecimal(Math.round(Number(product.sellingPrice) * 100)), discountAmount: toDecimal(lineDiscountCents), taxRate: product.taxRate, lineTotal: toDecimal(taxableCents) }))
       const store = await tx.store.findUniqueOrThrow({ where: { id: storeId }, select: { currency: true } })
-      const sale = await tx.sale.create({ data: { storeId, cashierUserId: BigInt(req.user.userId), customerId: customerId ? parseDatabaseId(customerId) : undefined, receiptNumber: `R-${Date.now()}-${randomBytes(3).toString('hex')}`, subtotal: toDecimal(subtotalCents), taxAmount: toDecimal(taxCents), totalAmount: toDecimal(totalCents), currency: store.currency, items: { create: items }, payments: receivedCents > 0 ? { create: { method: dto.paymentMethod ?? PaymentMethod.cash, amount: toDecimal(receivedCents) } } : undefined } })
+      const sale = await tx.sale.create({ data: { storeId, cashierUserId: BigInt(req.user.userId), customerId: customerId ? parseDatabaseId(customerId) : undefined, receiptNumber: `R-${Date.now()}-${randomBytes(3).toString('hex')}`, subtotal: toDecimal(subtotalCents), discountAmount: toDecimal(discountCents), taxAmount: toDecimal(taxCents), totalAmount: toDecimal(totalCents), currency: store.currency, items: { create: items }, payments: receivedCents > 0 ? { create: { method: dto.paymentMethod ?? PaymentMethod.cash, amount: toDecimal(receivedCents) } } : undefined } })
       for (const { product, quantity } of lines) {
         if (!product.trackInventory) continue
         const inventory = await tx.inventory.findUnique({ where: { storeId_productId: { storeId, productId: product.id } } })
@@ -489,11 +555,12 @@ class SalesController {
         const totalQty = updatedInventory.qtyDisplay + updatedInventory.qtyWarehouse + updatedInventory.qtyHome
         await tx.inventoryMovement.create({ data: { storeId, productId: product.id, userId: BigInt(req.user.userId), saleId: sale.id, movementType: 'sale', quantityDelta: -quantity, quantityAfter: totalQty } })
       }
-      return { id: sale.id.toString(), receiptNumber: sale.receiptNumber, subtotal: sale.subtotal.toString(), taxAmount: sale.taxAmount.toString(), totalAmount: sale.totalAmount.toString(), paidAmount: toDecimal(receivedCents), dueAmount: toDecimal(totalCents - receivedCents), status: sale.status }
+      return { id: sale.id.toString(), receiptNumber: sale.receiptNumber, subtotal: sale.subtotal.toString(), discountAmount: sale.discountAmount.toString(), taxAmount: sale.taxAmount.toString(), totalAmount: sale.totalAmount.toString(), paidAmount: toDecimal(receivedCents), dueAmount: toDecimal(totalCents - receivedCents), status: sale.status }
     })
   }
 
   @Post(':id/payments') async recordPayment(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
+    await requirePermission(this.prisma, req.user, 'sales.create')
     const dto = await validateBody(PaymentBody, body)
     const storeId = BigInt(req.user.storeId)
     const saleId = parseDatabaseId(rawId)
@@ -517,14 +584,22 @@ class CustomersController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   @Get() async list(@Req() req: { user: Session }) {
+    await requireAnyPermission(this.prisma, req.user, ['customers.read', 'customers.write'])
     const customers = await this.prisma.customer.findMany({
       where: { storeId: BigInt(req.user.storeId), deletedAt: null },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+      include: { sales: { where: { status: 'completed' }, select: { totalAmount: true, payments: { select: { amount: true } } } } },
     })
-    return customers.map((customer) => ({ ...customer, id: customer.id.toString(), storeId: customer.storeId.toString() }))
+    return customers.map(({ sales, ...customer }) => ({
+      ...customer,
+      id: customer.id.toString(),
+      storeId: customer.storeId.toString(),
+      pendingAmount: Math.round(sales.reduce((sum, sale) => sum + Math.max(0, Number(sale.totalAmount) - sale.payments.reduce((paid, payment) => paid + Number(payment.amount), 0)), 0) * 100) / 100,
+    }))
   }
 
   @Post() async create(@Req() req: { user: Session }, @Body() body: unknown) {
+    await requirePermission(this.prisma, req.user, 'customers.write')
     const dto = await validateBody(CustomerBody, body)
     const customer = await this.prisma.customer.create({
       data: {
@@ -540,7 +615,7 @@ class CustomersController {
   }
 
   @Patch(':id') async update(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
-    requireRole(req.user, ['owner', 'manager'])
+    await requirePermission(this.prisma, req.user, 'customers.write')
     const dto = await validateBody(CustomerUpdateBody, body)
     const storeId = BigInt(req.user.storeId)
     const customerId = parseDatabaseId(rawId)
@@ -560,7 +635,7 @@ class CustomersController {
   }
 
   @Delete(':id') async remove(@Req() req: { user: Session }, @Param('id') rawId: string) {
-    requireRole(req.user, ['owner', 'manager'])
+    await requirePermission(this.prisma, req.user, 'customers.write')
     const storeId = BigInt(req.user.storeId)
     const customerId = parseDatabaseId(rawId)
     return this.prisma.$transaction(async (tx) => {
@@ -573,5 +648,189 @@ class CustomersController {
   }
 }
 
-@Module({ controllers: [AuthController, DashboardController, ProductsController, CustomersController, SettingsController, SalesController], providers: [PrismaService, AuthService, JwtGuard] })
+@Controller('access')
+@UseGuards(JwtGuard)
+class AccessController {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  @Get('roles') async roles(@Req() req: { user: Session }) {
+    await requirePermission(this.prisma, req.user, 'users.write')
+    const storeId = BigInt(req.user.storeId)
+    const roles = await this.prisma.role.findMany({
+      where: { OR: [{ storeId: null }, { storeId }] },
+      include: { permissions: { include: { permission: true } } },
+      orderBy: { name: 'asc' },
+    })
+    const permissions = await this.prisma.permission.findMany({ orderBy: { permissionKey: 'asc' } })
+    const storeRoleNames = new Set(roles.filter((role) => role.storeId === storeId).map((role) => role.name))
+    return {
+      roles: roles.filter((role) => role.storeId === storeId || !storeRoleNames.has(role.name)).map((role) => ({
+        id: role.id.toString(),
+        name: role.name,
+        isOwner: role.isOwner,
+        description: role.description,
+        isEditable: role.storeId === storeId,
+        permissionKeys: role.permissions.map(({ permission }) => permission.permissionKey),
+      })),
+      permissions: permissions.map(({ permissionKey, description }) => ({ key: permissionKey, description })),
+    }
+  }
+
+  @Post('roles') async createRole(@Req() req: { user: Session }, @Body() body: unknown) {
+    await requirePermission(this.prisma, req.user, 'users.write')
+    const dto = await validateBody(RoleBody, body)
+    const name = dto.name.trim().toLowerCase()
+    if (['owner', 'manager', 'cashier'].includes(name)) throw new BadRequestException('That role name is reserved')
+    const permissionKeys = [...new Set(dto.permissionKeys)]
+    const permissions = await this.prisma.permission.findMany({ where: { permissionKey: { in: permissionKeys } } })
+    if (permissions.length !== permissionKeys.length) throw new BadRequestException('One or more permissions are invalid')
+    const role = await this.prisma.role.create({
+      data: {
+        name,
+        storeId: BigInt(req.user.storeId),
+        description: dto.description?.trim() || null,
+        permissions: { create: permissions.map(({ id }) => ({ permission: { connect: { id } } })) },
+      },
+    })
+    return { id: role.id.toString(), name: role.name, isOwner: role.isOwner, description: role.description, isEditable: true, permissionKeys }
+  }
+
+  @Patch('roles/:id/permissions') async setRolePermissions(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
+    await requirePermission(this.prisma, req.user, 'users.write')
+    const dto = await validateBody(RolePermissionsBody, body)
+    const roleId = parseDatabaseId(rawId)
+    const storeId = BigInt(req.user.storeId)
+    let role = await this.prisma.role.findFirst({ where: { id: roleId, storeId } })
+    if (!role) {
+      const builtInRole = await this.prisma.role.findFirst({ where: { id: roleId, storeId: null } })
+      if (!builtInRole || builtInRole.isOwner) throw new NotFoundException('Role not found')
+      role = await this.prisma.role.create({
+        data: { name: builtInRole.name, isOwner: builtInRole.isOwner, description: builtInRole.description, storeId },
+      })
+      await this.prisma.storeUser.updateMany({
+        where: { storeId, roleId: builtInRole.id },
+        data: { roleId: role.id },
+      })
+    }
+    if (!role) throw new NotFoundException('Role not found')
+    const permissionKeys = [...new Set(dto.permissionKeys)]
+    const permissions = await this.prisma.permission.findMany({ where: { permissionKey: { in: permissionKeys } } })
+    if (permissions.length !== permissionKeys.length) throw new BadRequestException('One or more permissions are invalid')
+    await this.prisma.$transaction([
+      this.prisma.rolePermission.deleteMany({ where: { roleId } }),
+      ...permissions.map(({ id: permissionId }) => this.prisma.rolePermission.create({ data: { roleId, permissionId } })),
+    ])
+    return { id: roleId.toString(), name: role.name, permissionKeys }
+  }
+
+  @Get('users') async users(@Req() req: { user: Session }) {
+    await requirePermission(this.prisma, req.user, 'users.write')
+    const storeUsers = await this.prisma.storeUser.findMany({
+      where: { storeId: BigInt(req.user.storeId), user: { deletedAt: null } },
+      include: { user: true, role: true },
+      orderBy: { user: { firstName: 'asc' } },
+    })
+    return storeUsers.map(({ user, role }) => ({
+      id: user.id.toString(),
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      isActive: user.isActive,
+      roleId: role.id.toString(),
+      roleName: role.name,
+    }))
+  }
+
+  @Post('users') async createUser(@Req() req: { user: Session }, @Body() body: unknown) {
+    await requirePermission(this.prisma, req.user, 'users.write')
+    const dto = await validateBody(CreateUserBody, body)
+    const roleId = parseDatabaseId(dto.roleId)
+    const storeId = BigInt(req.user.storeId)
+    const role = await this.prisma.role.findFirst({
+      where: { id: roleId, OR: [{ storeId: null }, { storeId }] },
+      select: { id: true, isOwner: true },
+    })
+    if (!role) throw new NotFoundException('Role not found')
+    if (role.isOwner) await requireOwner(this.prisma, req.user)
+    const user = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          email: dto.email.trim().toLowerCase(),
+          passwordHash: await hash(dto.password, 12),
+          firstName: dto.firstName.trim(),
+          lastName: dto.lastName?.trim() ?? '',
+        },
+      })
+      await tx.storeUser.create({ data: { storeId, userId: created.id, roleId } })
+      return created
+    })
+    return { id: user.id.toString(), email: user.email, firstName: user.firstName, lastName: user.lastName, isActive: user.isActive, roleId: roleId.toString() }
+  }
+
+  @Patch('users/:id') async updateUser(@Req() req: { user: Session }, @Param('id') rawId: string, @Body() body: unknown) {
+    await requirePermission(this.prisma, req.user, 'users.write')
+    const dto = await validateBody(UpdateUserBody, body)
+    const storeId = BigInt(req.user.storeId)
+    const userId = parseDatabaseId(rawId)
+    const membership = await this.prisma.storeUser.findUnique({
+      where: { storeId_userId: { storeId, userId } },
+      include: { user: true, role: true },
+    })
+    if (!membership || membership.user.deletedAt) throw new NotFoundException('User not found')
+    let roleId = membership.roleId
+    if (dto.roleId) {
+      const role = await this.prisma.role.findFirst({
+        where: { id: parseDatabaseId(dto.roleId), OR: [{ storeId: null }, { storeId }] },
+        select: { id: true, isOwner: true },
+      })
+      if (!role) throw new NotFoundException('Role not found')
+      roleId = role.id
+      if (role.isOwner) await requireOwner(this.prisma, req.user)
+      if (userId === BigInt(req.user.userId) && roleId !== membership.roleId) throw new ForbiddenException('You cannot change your own role')
+      if (membership.role.isOwner && roleId !== membership.roleId) {
+        await requireOwner(this.prisma, req.user)
+        const ownerCount = await this.prisma.storeUser.count({ where: { storeId, role: { isOwner: true } } })
+        if (ownerCount <= 1) throw new ForbiddenException('The store must keep at least one owner')
+      }
+    }
+    const user = await this.prisma.$transaction(async (tx) => {
+      if (roleId !== membership.roleId) await tx.storeUser.update({ where: { storeId_userId: { storeId, userId } }, data: { roleId } })
+      return tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(dto.email !== undefined ? { email: dto.email.trim().toLowerCase() } : {}),
+          ...(dto.firstName !== undefined ? { firstName: dto.firstName.trim() } : {}),
+          ...(dto.lastName !== undefined ? { lastName: dto.lastName.trim() } : {}),
+          ...(dto.password !== undefined ? { passwordHash: await hash(dto.password, 12) } : {}),
+        },
+      })
+    })
+    const updatedMembership = await this.prisma.storeUser.findUniqueOrThrow({
+      where: { storeId_userId: { storeId, userId } },
+      include: { role: true },
+    })
+    return { id: user.id.toString(), email: user.email, firstName: user.firstName, lastName: user.lastName, isActive: user.isActive, roleId: updatedMembership.roleId.toString(), roleName: updatedMembership.role.name }
+  }
+
+  @Delete('users/:id') async removeUser(@Req() req: { user: Session }, @Param('id') rawId: string) {
+    await requirePermission(this.prisma, req.user, 'users.write')
+    const storeId = BigInt(req.user.storeId)
+    const userId = parseDatabaseId(rawId)
+    if (userId === BigInt(req.user.userId)) throw new ForbiddenException('You cannot remove your own store access')
+    const membership = await this.prisma.storeUser.findUnique({
+      where: { storeId_userId: { storeId, userId } },
+      include: { role: true },
+    })
+    if (!membership) throw new NotFoundException('User not found')
+    if (membership.role.isOwner) {
+      await requireOwner(this.prisma, req.user)
+      const ownerCount = await this.prisma.storeUser.count({ where: { storeId, role: { isOwner: true } } })
+      if (ownerCount <= 1) throw new ForbiddenException('The store must keep at least one owner')
+    }
+    await this.prisma.storeUser.delete({ where: { storeId_userId: { storeId, userId } } })
+    return { id: userId.toString(), deleted: true }
+  }
+}
+
+@Module({ controllers: [AuthController, DashboardController, ProductsController, CustomersController, SettingsController, SalesController, AccessController], providers: [PrismaService, AuthService, JwtGuard] })
 export class AppModule {}

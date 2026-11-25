@@ -4,6 +4,7 @@ USE stockroom;
 CREATE TABLE roles (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   name VARCHAR(60) NOT NULL,
+  is_owner BOOLEAN NOT NULL DEFAULT FALSE,
   description VARCHAR(255) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id), UNIQUE KEY uq_roles_name (name)
@@ -257,10 +258,10 @@ CREATE TABLE data_exports (
   CONSTRAINT fk_exports_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
-INSERT INTO roles (name, description) VALUES
-  ('owner', 'Full access to the store'),
-  ('manager', 'Manage products, inventory, and reporting'),
-  ('cashier', 'Process sales and manage customers');
+INSERT INTO roles (name, is_owner, description) VALUES
+  ('owner', TRUE, 'Full access to the store'),
+  ('manager', FALSE, 'Manage products, inventory, and reporting'),
+  ('cashier', FALSE, 'Process sales and manage customers');
 
 INSERT INTO permissions (permission_key, description) VALUES
   ('products.read', 'View the product catalog'),
@@ -268,6 +269,7 @@ INSERT INTO permissions (permission_key, description) VALUES
   ('inventory.adjust', 'Restock and adjust inventory'),
   ('sales.read', 'View sales records'),
   ('sales.create', 'Complete checkout'),
+  ('customers.read', 'View customer records and balances'),
   ('customers.write', 'Manage customer records'),
   ('reports.read', 'View business reports'),
   ('settings.write', 'Manage store settings'),
@@ -276,6 +278,6 @@ INSERT INTO permissions (permission_key, description) VALUES
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r CROSS JOIN permissions p WHERE r.name = 'owner';
 INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r JOIN permissions p ON p.permission_key IN ('products.read','products.write','inventory.adjust','sales.read','sales.create','customers.write','reports.read') WHERE r.name = 'manager';
+SELECT r.id, p.id FROM roles r JOIN permissions p ON p.permission_key IN ('products.read','products.write','inventory.adjust','sales.read','sales.create','customers.read','customers.write','reports.read') WHERE r.name = 'manager';
 INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r JOIN permissions p ON p.permission_key IN ('products.read','sales.create','customers.write') WHERE r.name = 'cashier';
+SELECT r.id, p.id FROM roles r JOIN permissions p ON p.permission_key IN ('products.read','sales.create','customers.read','customers.write') WHERE r.name = 'cashier';

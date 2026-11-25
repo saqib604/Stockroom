@@ -12,7 +12,7 @@ async function main() {
   const email = process.env.ADMIN_EMAIL?.toLowerCase()
   const password = process.env.ADMIN_PASSWORD
   if (!email || !password || password.length < 12) throw new Error('Set ADMIN_EMAIL and an ADMIN_PASSWORD of at least 12 characters in .env')
-  const ownerRole = await prisma.role.findUnique({ where: { name: 'owner' } })
+  const ownerRole = await prisma.role.findFirst({ where: { isOwner: true, storeId: null } })
   if (!ownerRole) throw new Error('Run database/mysql/001_schema.sql first to create roles and permissions')
   const store = await prisma.store.upsert({ where: { id: 1n }, create: { name: process.env.STORE_NAME ?? 'My Retail Store' }, update: {} })
   const user = await prisma.user.upsert({ where: { email }, create: { email, passwordHash: await hash(password, 12), firstName: 'Store', lastName: 'Owner' }, update: { passwordHash: await hash(password, 12), isActive: true, deletedAt: null } })

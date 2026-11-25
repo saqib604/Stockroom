@@ -59,6 +59,7 @@ model Store {
   createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamp(0)
   updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamp(0)
   users       StoreUser[]
+  roles       Role[]
   registers   Register[]
   categories  Category[]
   products    Product[]
@@ -76,12 +77,16 @@ model Store {
 
 model Role {
   id          BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
-  name        String        @unique @db.VarChar(60)
+  storeId     BigInt?       @map("store_id") @db.UnsignedBigInt
+  name        String        @db.VarChar(60)
+  isOwner     Boolean       @default(false) @map("is_owner")
   description String?       @db.VarChar(255)
   createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamp(0)
+  store       Store?        @relation(fields: [storeId], references: [id], onDelete: Cascade)
   users       StoreUser[]
   permissions RolePermission[]
 
+  @@unique([storeId, name])
   @@map("roles")
 }
 

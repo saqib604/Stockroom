@@ -38,12 +38,38 @@ Successful response (`201`):
     "name": "Store Owner",
     "storeId": "1",
     "storeName": "My Retail Store",
-    "role": "owner"
+    "role": "owner",
+    "isOwner": true,
+    "permissions": ["products.read", "users.write"]
   }
 }
 ```
 
 Invalid credentials or a user without a store membership return `401`.
+
+### `GET /auth/session`
+
+Authentication required. Returns the current user's store membership, including the database-backed `isOwner` flag and current role permissions. This can be used to refresh permission-driven UI without requiring the user to sign in again.
+
+## Users and roles
+
+Apply `database/mysql/004_store_scoped_roles.sql` after `001_schema.sql` to enable store-owned custom roles. Access-management endpoints require `users.write`; store settings updates require `settings.write`. Owners receive both by default. Built-in roles are shared by default; changing a built-in non-owner role creates a store-scoped copy and moves this store's users on that role to the copy. Only an owner can assign or remove an owner membership.
+
+Apply `database/mysql/005_role_owner_flag.sql` after `004_store_scoped_roles.sql` on existing databases. Apply `database/mysql/006_customer_read_permission.sql` after `005_role_owner_flag.sql` to add read-only customer access, then apply `database/mysql/007_management_permissions.sql` to ensure management permissions exist on existing installations. Fresh installs include these permissions in `001_schema.sql` and can still run the migrations safely.
+
+`GET /auth/session` returns the authenticated user's current store role, owner flag, and permissions from the database. Clients can refresh this endpoint to keep permission-driven navigation current after role changes.
+
+Access-management endpoints:
+
+- `GET /access/roles` returns built-in roles, the current store's custom roles, and the available feature permissions.
+- `POST /access/roles` creates a store-scoped role with a selected set of `permissionKeys`.
+- `PATCH /access/roles/:id/permissions` replaces the feature permissions for a store-owned role or creates a store-scoped copy of a built-in non-owner role.
+- `GET /access/users` lists users assigned to the current store with their role.
+- `POST /access/users` creates a user and assigns them to a built-in or current-store role. Passwords must be at least 12 characters.
+- `PATCH /access/users/:id` updates a store member's name, email, password, or store role. Passwords must be at least 12 characters when provided.
+- `DELETE /access/users/:id` removes a user's membership from the current store without deleting their global account. The current user and the store's last owner cannot be removed.
+
+The permission keys include `products.read`, `products.write`, `inventory.adjust`, `sales.read`, `sales.create`, `customers.read`, `customers.write`, `reports.read`, `settings.write`, and `users.write`. Customer listing requires `customers.read` or `customers.write`; customer changes require `customers.write`.
 
 ## Store settings
 
@@ -53,7 +79,7 @@ Authentication required. Returns the current store's name, currency, IANA time z
 
 ### `PATCH /settings`
 
-Authentication required. Only `owner` and `manager` roles may update settings. All fields are optional; `defaultCustomerId: null` clears the default. A customer ID must belong to the authenticated store.
+Authentication required. Only the store owner may update settings. All fields are optional; `defaultCustomerId: null` clears the default. A customer ID must belong to the authenticated store.
 
 ```json
 {
