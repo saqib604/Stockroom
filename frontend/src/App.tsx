@@ -449,10 +449,13 @@ function App() {
     if (!session || !selectedRoleId) return
     setBusy(true)
     try {
-      await setRolePermissions(session.accessToken, selectedRoleId, rolePermissionKeys)
+      const savedRole = await setRolePermissions(session.accessToken, selectedRoleId, rolePermissionKeys)
       const access = await getAccessRoles(session.accessToken)
       setAccessRoles(access.roles)
       setAccessPermissions(access.permissions)
+      const refreshedRole = access.roles.find((role) => role.id === savedRole.id)
+      setSelectedRoleId(refreshedRole?.id ?? '')
+      setRolePermissionKeys(refreshedRole?.permissionKeys ?? savedRole.permissionKeys)
       alert('Role permissions saved')
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Could not save role permissions')

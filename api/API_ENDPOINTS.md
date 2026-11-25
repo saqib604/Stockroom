@@ -79,7 +79,7 @@ Authentication required. Returns the current store's name, currency, IANA time z
 
 ### `PATCH /settings`
 
-Authentication required. Only the store owner may update settings. All fields are optional; `defaultCustomerId: null` clears the default. A customer ID must belong to the authenticated store.
+Authentication required. Requires the `settings.write` role permission. All fields are optional; `defaultCustomerId: null` clears the default. A customer ID must belong to the authenticated store.
 
 ```json
 {

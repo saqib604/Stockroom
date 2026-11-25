@@ -716,11 +716,12 @@ class AccessController {
     const permissionKeys = [...new Set(dto.permissionKeys)]
     const permissions = await this.prisma.permission.findMany({ where: { permissionKey: { in: permissionKeys } } })
     if (permissions.length !== permissionKeys.length) throw new BadRequestException('One or more permissions are invalid')
+    const effectiveRoleId = role.id
     await this.prisma.$transaction([
-      this.prisma.rolePermission.deleteMany({ where: { roleId } }),
-      ...permissions.map(({ id: permissionId }) => this.prisma.rolePermission.create({ data: { roleId, permissionId } })),
+      this.prisma.rolePermission.deleteMany({ where: { roleId: effectiveRoleId } }),
+      ...permissions.map(({ id: permissionId }) => this.prisma.rolePermission.create({ data: { roleId: effectiveRoleId, permissionId } })),
     ])
-    return { id: roleId.toString(), name: role.name, permissionKeys }
+    return { id: role.id.toString(), name: role.name, permissionKeys }
   }
 
   @Get('users') async users(@Req() req: { user: Session }) {

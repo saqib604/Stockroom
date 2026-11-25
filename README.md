@@ -55,7 +55,7 @@ In the frontend, set the store currency, time zone, and **Default customer** und
 
 For manual MySQL installation, execute `database/mysql/001_schema.sql` against MySQL 8.0.16+. It creates the database, tables, indexes, constraints, role/permission defaults, and referential rules. Do not use Prisma `db push` against an existing production database; use reviewed migration SQL for production changes.
 
-For existing databases, apply `database/mysql/003_product_in_demand.sql` to add the product in-demand flag before deploying the updated API.
+For an existing database created from the original schema, apply any unapplied SQL upgrades in order before deploying the updated API: `002_inventory_locations.sql`, `003_product_in_demand.sql`, `004_store_scoped_roles.sql`, `005_role_owner_flag.sql`, `006_customer_read_permission.sql`, then `007_management_permissions.sql`. These upgrades preserve the existing database and data; do not rerun an upgrade already applied. In particular, migration 007 adds the `settings.write` and `users.write` permission records and assigns them to owner roles. Without those rows, the permission editor cannot offer these grants and the matching menus stay hidden.
 
 ## Build and checks
 
