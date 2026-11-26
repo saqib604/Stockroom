@@ -153,7 +153,13 @@ Successful response (`200`):
 
 ### `GET /products`
 
-Authentication required. Returns the current store's non-deleted products ordered by name.
+Authentication required. Returns the current store's non-deleted products ordered by name. Optional query parameters are applied by the API:
+
+- `search` matches product name, SKU, or category.
+- `stock` accepts `all`, `in-stock`, `low-stock`, or `out-of-stock` (`in-stock` is more than 8 units; `low-stock` is 1-8 units).
+- `category` matches a category name.
+
+`GET /products/categories` returns the current store's category names for filter controls.
 
 Successful response (`200`):
 
@@ -235,7 +241,7 @@ Authentication required. Only `owner` and `manager` roles may edit or delete pro
 
 ### `GET /customers` and `POST /customers`
 
-Authentication required. Lists non-deleted customers for the current store or creates a customer in that store.
+Authentication required. Lists non-deleted customers for the current store or creates a customer in that store. `GET /customers` accepts an optional `search` parameter that matches first name, last name, email, or phone.
 
 ### `PATCH /customers/:id` and `DELETE /customers/:id`
 
@@ -271,7 +277,7 @@ Invalid IDs return `400`; a product not found in the user's store returns `404`.
 
 ### `GET /sales`
 
-Authentication required. Returns up to 200 sales for the authenticated store, newest first. Each row includes its customer, item snapshots, payment history, `paidAmount`, `dueAmount`, and `paymentStatus` (`paid`, `partial`, or `unpaid`).
+Authentication required. Returns matching sales for the authenticated store, newest first. Each row includes its customer, item snapshots, payment history, `paidAmount`, `dueAmount`, and `paymentStatus` (`paid`, `partial`, or `unpaid`). Optional query parameters are `search` (receipt number or customer name), `paymentStatus` (`all`, `paid`, `partial`, or `unpaid`), and `date` (`all`, `today`, `7-days`, or `30-days`). Date ranges use the store's configured time zone.
 
 ### `POST /sales/checkout`
 

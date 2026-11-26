@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Archive, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleDollarSign, ClipboardList, Download, LayoutDashboard, PackagePlus, Pencil, Plus, Search, Settings, ShieldCheck, ShoppingCart, Trash2, Users, X } from 'lucide-react'
-import { adjustStock, checkout as submitCheckout, createAccessRole, createCustomer, createProduct, createStoreUser, deleteCustomer, deleteProduct, deleteStoreUser, getAccessRoles, getCurrentSession, getDashboardSummary, getStoreSettings, listCustomers, listProducts, listSales, listStoreUsers, login, recordSalePayment, restockAtLocation, setRolePermissions, updateCustomer, updateProduct, updateStoreSettings, updateStoreUser, type AccessPermission, type AccessRole, type Customer, type DashboardSummary, type Product, type SaleRecord, type Session, type StockLocation, type StoreSettings, type StoreUser } from './api'
+import { adjustStock, checkout as submitCheckout, createAccessRole, createCustomer, createProduct, createStoreUser, deleteCustomer, deleteProduct, deleteStoreUser, getAccessRoles, getCurrentSession, getDashboardSummary, getStoreSettings, listCustomers, listProductCategories, listProducts, listSales, listStoreUsers, login, recordSalePayment, restockAtLocation, setRolePermissions, updateCustomer, updateProduct, updateStoreSettings, updateStoreUser, type AccessPermission, type AccessRole, type Customer, type DashboardSummary, type Product, type SaleRecord, type Session, type StockLocation, type StoreSettings, type StoreUser } from './api'
 import './App.css'
 import './login.css'
 
@@ -17,6 +17,8 @@ function App() {
     return saved ? JSON.parse(saved) as Session : null
   })
   const [products, setProducts] = useState<Product[]>([])
+  const [productCategories, setProductCategories] = useState<string[]>([])
+  const [posProducts, setPosProducts] = useState<Product[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [sales, setSales] = useState<SaleRecord[]>([])
   const [settings, setSettings] = useState<StoreSettings>({ storeName: '', currency: 'USD', timezone: 'UTC', defaultCustomerId: null })
@@ -57,20 +59,10 @@ function App() {
   const money = useMemo(() => new Intl.NumberFormat(settings.currency === 'PKR' ? 'en-PK' : 'en-US', { style: 'currency', currency: settings.currency }), [settings.currency])
   const chartMoney = useMemo(() => new Intl.NumberFormat(settings.currency === 'PKR' ? 'en-PK' : 'en-US', { style: 'currency', currency: settings.currency, notation: 'compact', maximumFractionDigits: 0 }), [settings.currency])
   const todayLabel = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: settings.timezone }).format(new Date()).toUpperCase()
-  const matches = useMemo(() => products.filter((p) => `${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(query.toLowerCase())), [products, query])
-  const filteredProducts = useMemo(() => matches.filter((product) => {
-    const stockMatches = productStockFilter === 'all' || (productStockFilter === 'in-stock' && product.stock > 8) || (productStockFilter === 'low-stock' && product.stock > 0 && product.stock <= 8) || (productStockFilter === 'out-of-stock' && product.stock === 0)
-    return stockMatches && (productCategoryFilter === 'all' || product.category === productCategoryFilter)
-  }), [matches, productStockFilter, productCategoryFilter])
-  const filteredSales = useMemo(() => sales.filter((sale) => {
-    const term = salesQuery.toLowerCase()
-    const textMatches = `${sale.receiptNumber} ${sale.customer ? `${sale.customer.firstName} ${sale.customer.lastName}` : 'Walk-in'}`.toLowerCase().includes(term)
-    const statusMatches = salesPaymentFilter === 'all' || sale.paymentStatus === salesPaymentFilter
-    const age = Date.now() - new Date(sale.soldAt).getTime()
-    const dateMatches = salesDateFilter === 'all' || (salesDateFilter === 'today' && new Date(sale.soldAt).toDateString() === new Date().toDateString()) || (salesDateFilter === '7-days' && age <= 7 * 86400000) || (salesDateFilter === '30-days' && age <= 30 * 86400000)
-    return textMatches && statusMatches && dateMatches
-  }), [sales, salesQuery, salesPaymentFilter, salesDateFilter])
-  const filteredCustomers = useMemo(() => customers.filter((customer) => `${customer.firstName} ${customer.lastName} ${customer.email ?? ''} ${customer.phone ?? ''}`.toLowerCase().includes(customerQuery.toLowerCase())), [customers, customerQuery])
+  const matches = products
+  const filteredProducts = products
+  const filteredSales = sales
+  const filteredCustomers = customers
   const customerPendingTotal = customers.reduce((sum, customer) => sum + customer.pendingAmount, 0)
   const can = (permission: string) => session?.user.permissions?.includes(permission) ?? false
   const canViewProducts = can('products.read') || can('products.write') || can('inventory.adjust')
@@ -83,21 +75,22 @@ function App() {
     || (name === 'Settings' && can('settings.write'))
     || (name === 'Access' && can('users.write'))
   const count = Object.values(cart).reduce((sum, itemCount) => sum + itemCount, 0)
-  const saleSubtotalCents = products.reduce((sum, product) => sum + Math.round(product.price * 100) * (cart[product.id] ?? 0), 0)
+  const saleSubtotalCents = posProducts.reduce((sum, product) => sum + Math.round(product.price * 100) * (cart[product.id] ?? 0), 0)
   const saleDiscountCents = saleCustomerId ? Math.min(Math.round(Number(discountInput || 0) * 100), saleSubtotalCents) : 0
   let remainingCartDiscount = saleDiscountCents
-  const cartProducts = products.filter((product) => (cart[product.id] ?? 0) > 0)
+  const cartProducts = posProducts.filter((product) => (cart[product.id] ?? 0) > 0)
   const saleTaxCents = cartProducts.reduce((sum, product, index) => {
     const quantity = cart[product.id]
     const lineSubtotal = Math.round(product.price * 100) * quantity
-    const lineDiscount = index === products.length - 1 ? remainingCartDiscount : Math.min(remainingCartDiscount, Math.round(saleDiscountCents * lineSubtotal / Math.max(1, saleSubtotalCents)))
+    const lineDiscount = index === cartProducts.length - 1 ? remainingCartDiscount : Math.min(remainingCartDiscount, Math.round(saleDiscountCents * lineSubtotal / Math.max(1, saleSubtotalCents)))
     remainingCartDiscount -= lineDiscount
     return sum + Math.round((lineSubtotal - lineDiscount) * Math.round(product.taxRate * 1000) / 100000)
   }, 0)
   const total = (saleSubtotalCents - saleDiscountCents + saleTaxCents) / 100
   const alert = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 2500) }
   const refreshData = async (token: string) => {
-    const [rows, summary] = await Promise.all([canViewProducts ? listProducts(token) : Promise.resolve([]), can('reports.read') ? getDashboardSummary(token) : Promise.resolve(null)])
+    const productFilters = section === 'Products' || section === 'Inventory' ? { search: query, stock: productStockFilter, category: productCategoryFilter } : { search: query }
+    const [rows, summary] = await Promise.all([canViewProducts ? listProducts(token, productFilters) : Promise.resolve([]), can('reports.read') ? getDashboardSummary(token) : Promise.resolve(null)])
     setProducts(rows)
     if (summary) setDashboard(summary)
   }
@@ -105,9 +98,8 @@ function App() {
   useEffect(() => {
     if (!session) return
     let active = true
-    Promise.all([canViewProducts ? listProducts(session.accessToken) : Promise.resolve([]), can('reports.read') ? getDashboardSummary(session.accessToken) : Promise.resolve(null), getStoreSettings(session.accessToken)]).then(([rows, summary, storeSettings]) => {
+    Promise.all([can('reports.read') ? getDashboardSummary(session.accessToken) : Promise.resolve(null), getStoreSettings(session.accessToken)]).then(([summary, storeSettings]) => {
       if (active) {
-        setProducts(rows)
         setDashboard(summary)
         setSettings(storeSettings)
       }
@@ -116,7 +108,7 @@ function App() {
       localStorage.removeItem('stockroom-session')
       setSession(null)
       setProducts([])
-      setNotice(error instanceof Error ? error.message : 'Could not load products')
+      setNotice(error instanceof Error ? error.message : 'Could not load store data')
     }).finally(() => {
       if (active) setLoading(false)
     })
@@ -158,13 +150,7 @@ function App() {
   }, [isOwner, section, session?.user.permissions])
 
   useEffect(() => {
-    if (!session || !['Customers', 'Settings', 'Sales', 'Access'].includes(section)) return
-    if (can('customers.read') || can('customers.write')) listCustomers(session.accessToken).then(setCustomers).catch((error: unknown) => {
-      alert(error instanceof Error ? error.message : 'Could not load customers')
-    })
-    if (section === 'Sales' && can('sales.read')) listSales(session.accessToken).then(setSales).catch((error: unknown) => {
-      alert(error instanceof Error ? error.message : 'Could not load sales')
-    })
+    if (!session || !['Settings', 'Access'].includes(section)) return
     if (section === 'Access' && can('users.write')) Promise.all([getAccessRoles(session.accessToken), listStoreUsers(session.accessToken)]).then(([access, users]) => {
       setAccessRoles(access.roles)
       setAccessPermissions(access.permissions)
@@ -175,6 +161,80 @@ function App() {
       setRolePermissionKeys(selectedRole?.permissionKeys ?? [])
     }).catch((error: unknown) => alert(error instanceof Error ? error.message : 'Could not load access settings'))
   }, [session, section, isOwner])
+
+  useEffect(() => {
+    if (!session || !canViewProducts || !['Overview', 'Products', 'Inventory'].includes(section)) return
+    let active = true
+    const productFilters = section === 'Products' || section === 'Inventory'
+      ? { search: query, stock: productStockFilter, category: productCategoryFilter }
+      : { search: query }
+    const timeout = window.setTimeout(() => {
+      setLoading(true)
+      listProducts(session.accessToken, productFilters).then((rows) => {
+        if (active) setProducts(rows)
+      }).catch((error: unknown) => {
+        if (active) alert(error instanceof Error ? error.message : 'Could not load products')
+      }).finally(() => {
+        if (active) setLoading(false)
+      })
+    }, 250)
+    return () => { active = false; window.clearTimeout(timeout) }
+  }, [session?.accessToken, canViewProducts, section, query, productStockFilter, productCategoryFilter])
+
+  useEffect(() => {
+    if (!session || !canViewProducts || !['Products', 'Inventory'].includes(section)) return
+    let active = true
+    listProductCategories(session.accessToken).then((categories) => {
+      if (active) setProductCategories(categories)
+    }).catch((error: unknown) => {
+      if (active) alert(error instanceof Error ? error.message : 'Could not load product categories')
+    })
+    return () => { active = false }
+  }, [session?.accessToken, canViewProducts, section])
+
+  useEffect(() => {
+    if (!session || section !== 'Sales' || !posMode) return
+    let active = true
+    const timeout = window.setTimeout(() => {
+      listProducts(session.accessToken, { search: posSearch }).then((rows) => {
+        if (!active) return
+        setPosProducts((current) => {
+          const resultIds = new Set(rows.map((product) => product.id))
+          return [...rows, ...current.filter((product) => (cart[product.id] ?? 0) > 0 && !resultIds.has(product.id))]
+        })
+      }).catch((error: unknown) => {
+        if (active) alert(error instanceof Error ? error.message : 'Could not search products')
+      })
+    }, 250)
+    return () => { active = false; window.clearTimeout(timeout) }
+  }, [session?.accessToken, section, posMode, posSearch])
+
+  useEffect(() => {
+    if (!session || !['Customers', 'Settings', 'Sales'].includes(section) || (!can('customers.read') && !can('customers.write'))) return
+    let active = true
+    const timeout = window.setTimeout(() => {
+      const search = section === 'Customers' ? customerQuery : ''
+      listCustomers(session.accessToken, { search }).then((rows) => {
+        if (active) setCustomers(rows)
+      }).catch((error: unknown) => {
+        if (active) alert(error instanceof Error ? error.message : 'Could not load customers')
+      })
+    }, 250)
+    return () => { active = false; window.clearTimeout(timeout) }
+  }, [session?.accessToken, section, customerQuery, session?.user.permissions])
+
+  useEffect(() => {
+    if (!session || section !== 'Sales' || !can('sales.read')) return
+    let active = true
+    const timeout = window.setTimeout(() => {
+      listSales(session.accessToken, { search: salesQuery, paymentStatus: salesPaymentFilter, date: salesDateFilter }).then((rows) => {
+        if (active) setSales(rows)
+      }).catch((error: unknown) => {
+        if (active) alert(error instanceof Error ? error.message : 'Could not load sales')
+      })
+    }, 250)
+    return () => { active = false; window.clearTimeout(timeout) }
+  }, [session?.accessToken, section, salesQuery, salesPaymentFilter, salesDateFilter, session?.user.permissions])
 
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -197,6 +257,10 @@ function App() {
     localStorage.removeItem('stockroom-session')
     setSession(null)
     setProducts([])
+    setProductCategories([])
+    setPosProducts([])
+    setCustomers([])
+    setSales([])
     setDashboard(null)
     setCart({})
   }
@@ -267,10 +331,9 @@ function App() {
         phone: String(data.get('phone') ?? '').trim() || null,
         notes: String(data.get('notes') ?? '').trim() || null,
       }
-      const customer = editingCustomer
-        ? await updateCustomer(session.accessToken, editingCustomer.id, customerData)
-        : await createCustomer(session.accessToken, customerData)
-      setCustomers((current) => [...current.filter((item) => item.id !== customer.id), customer].sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`)))
+      if (editingCustomer) await updateCustomer(session.accessToken, editingCustomer.id, customerData)
+      else await createCustomer(session.accessToken, customerData)
+      setCustomers(await listCustomers(session.accessToken, { search: section === 'Customers' ? customerQuery : '' }))
       setShowCustomerForm(false)
       setEditingCustomer(null)
       alert(editingCustomer ? 'Customer updated' : 'Customer added')
@@ -336,7 +399,7 @@ function App() {
         discountAmount: saleCustomerId && discountInput !== '' ? Number(discountInput) : undefined,
       })
       await refreshData(session.accessToken)
-      const updatedSales = await listSales(session.accessToken)
+      const updatedSales = await listSales(session.accessToken, { search: salesQuery, paymentStatus: salesPaymentFilter, date: salesDateFilter })
       setSales(updatedSales)
       setCart({})
       setPaymentAmount('')
@@ -357,7 +420,7 @@ function App() {
     setBusy(true)
     try {
       await recordSalePayment(session.accessToken, paymentSale.id, Number(paymentEntry), paymentMethod)
-      setSales(await listSales(session.accessToken))
+      setSales(await listSales(session.accessToken, { search: salesQuery, paymentStatus: salesPaymentFilter, date: salesDateFilter }))
       setPaymentSale(null)
       setPaymentEntry('')
       alert('Payment recorded')
@@ -488,9 +551,9 @@ function App() {
           <section className="panel product-panel"><div className="panel-heading"><div><h2>Products to watch</h2><p>Items that may need your attention</p></div><button className="text-link" onClick={() => setSection('Inventory')}>View all inventory <ArrowUpRight size={14} /></button></div>{loading ? <div className="empty-state">Loading inventory…</div> : <ProductTable products={matches.filter((p) => p.stock <= 8).slice(0, 4)} money={money} onRestock={(id) => restock(id, 'DISP', 10)} onAdjust={adjustQuantity} />}</section>
           <section className="bottom-grid"><div className="panel activity-panel"><div className="panel-heading"><div><h2>Recent sales</h2><p>Latest transactions recorded by the API</p></div></div>{dashboard?.recentSales.length ? dashboard.recentSales.slice(0, 3).map((sale) => <Activity key={sale.receiptNumber} initials={sale.customerName.split(' ').map((part) => part[0]).join('').slice(0, 2)} name={sale.customerName} action={`receipt ${sale.receiptNumber}`} time={new Date(sale.soldAt).toLocaleString()} amount={money.format(sale.total)} />) : <div className="empty-state">No sales recorded yet.</div>}</div><div className="panel quick-panel"><div className="panel-heading"><div><h2>Quick actions</h2><p>Store operations</p></div></div><button className="quick-action" onClick={() => setSection('Sales')}><ShoppingCart size={18} /><span><strong>New sale</strong><small>Ring up a customer</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={() => setShowProductForm(true)}><PackagePlus size={18} /><span><strong>Add product</strong><small>Grow your catalog</small></span><ArrowUpRight size={15} /></button><button className="quick-action" onClick={exportCsv}><Download size={18} /><span><strong>Export data</strong><small>Download as CSV</small></span><ArrowUpRight size={15} /></button></div></section>
         </>}
-        {isProducts && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><div className="table-filters"><button className={`filter-chip ${productStockFilter === 'all' ? 'selected' : ''}`} onClick={() => setProductStockFilter('all')}>All items <span>{products.length}</span></button><button className={`filter-chip ${productStockFilter === 'in-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('in-stock')}>In stock</button><button className={`filter-chip ${productStockFilter === 'low-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('low-stock')}>Low stock</button><button className={`filter-chip ${productStockFilter === 'out-of-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('out-of-stock')}>Out of stock</button><select aria-label="Filter by category" value={productCategoryFilter} onChange={(event) => setProductCategoryFilter(event.target.value)}><option value="all">All categories</option>{[...new Set(products.map((product) => product.category))].sort().map((category) => <option key={category} value={category}>{category}</option>)}</select></div><button className="button button-secondary compact" onClick={exportCsv}><Download size={15} /> Export CSV</button></div>{loading ? <div className="empty-state">Loading products…</div> : <ProductTable products={filteredProducts} money={money} onEdit={(product) => { setEditingProduct(product); setShowProductForm(true) }} onDelete={removeProduct} onRestock={(id) => { void restock(id, 'DISP', 10) }} onAdjust={adjustQuantity} />}<div className="table-footer"><span>Showing <strong>{filteredProducts.length}</strong> of <strong>{products.length}</strong> products</span></div></section>}
+        {isProducts && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><div className="table-filters"><button className={`filter-chip ${productStockFilter === 'all' ? 'selected' : ''}`} onClick={() => setProductStockFilter('all')}>All items <span>{products.length}</span></button><button className={`filter-chip ${productStockFilter === 'in-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('in-stock')}>In stock</button><button className={`filter-chip ${productStockFilter === 'low-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('low-stock')}>Low stock</button><button className={`filter-chip ${productStockFilter === 'out-of-stock' ? 'selected' : ''}`} onClick={() => setProductStockFilter('out-of-stock')}>Out of stock</button><select aria-label="Filter by category" value={productCategoryFilter} onChange={(event) => setProductCategoryFilter(event.target.value)}><option value="all">All categories</option>{productCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></div><button className="button button-secondary compact" onClick={exportCsv}><Download size={15} /> Export CSV</button></div>{loading ? <div className="empty-state">Loading products…</div> : <ProductTable products={filteredProducts} money={money} onEdit={(product) => { setEditingProduct(product); setShowProductForm(true) }} onDelete={removeProduct} onRestock={(id) => { void restock(id, 'DISP', 10) }} onAdjust={adjustQuantity} />}<div className="table-footer"><span>Showing <strong>{filteredProducts.length}</strong> of <strong>{products.length}</strong> products</span></div></section>}
         {section === 'Sales' && !posMode && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><strong>Recent sales <span className="nav-count">{filteredSales.length}</span></strong><label className="global-search sales-search"><Search size={15} /><input value={salesQuery} onChange={(event) => setSalesQuery(event.target.value)} placeholder="Search receipt or customer" aria-label="Search sales" /></label><select aria-label="Filter sales by payment status" value={salesPaymentFilter} onChange={(event) => setSalesPaymentFilter(event.target.value)}><option value="all">All payment statuses</option><option value="paid">Paid</option><option value="partial">Partially paid</option><option value="unpaid">Unpaid</option></select><select aria-label="Filter sales by date" value={salesDateFilter} onChange={(event) => setSalesDateFilter(event.target.value)}><option value="all">Any date</option><option value="today">Today</option><option value="7-days">Last 7 days</option><option value="30-days">Last 30 days</option></select></div><div className="table-scroll"><table className="product-table sales-table"><thead><tr><th>RECEIPT</th><th>DATE</th><th>CUSTOMER</th><th>ITEMS</th><th>TOTAL</th><th>PAID</th><th>OUTSTANDING</th><th>PAYMENT</th><th /></tr></thead><tbody>{filteredSales.map((sale) => <tr key={sale.id}><td><strong>{sale.receiptNumber}</strong></td><td>{new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: settings.timezone }).format(new Date(sale.soldAt))}</td><td>{sale.customer ? `${sale.customer.firstName} ${sale.customer.lastName}` : 'Walk-in customer'}</td><td>{sale.items.reduce((sum, item) => sum + item.quantity, 0)} items</td><td className="price-cell">{money.format(sale.totalAmount)}</td><td>{money.format(sale.paidAmount)}</td><td className="price-cell">{money.format(sale.dueAmount)}</td><td><span className={`status-pill ${sale.paymentStatus === 'paid' ? 'in-stock' : sale.paymentStatus === 'partial' ? 'low-stock' : 'out-of-stock'}`}>{sale.paymentStatus === 'paid' ? 'Paid' : sale.paymentStatus === 'partial' ? 'Partially paid' : 'Unpaid'}</span></td><td>{sale.dueAmount > 0 && <button className="button button-secondary compact" onClick={() => { setPaymentSale(sale); setPaymentEntry(sale.dueAmount.toFixed(2)) }}>Record payment</button>}</td></tr>)}</tbody></table>{filteredSales.length === 0 && <div className="empty-state">No matching sales.</div>}</div></section>}
-        {section === 'Sales' && posMode && <section className="pos-layout"><div className="panel pos-products"><div className="panel-heading"><div><h2>Find products</h2><p>Search by product name, SKU, or category.</p></div></div><label className="pos-search"><Search size={16} /><input autoFocus value={posSearch} onChange={(event) => setPosSearch(event.target.value)} placeholder="Search products to add" /></label><div className="pos-product-list">{products.filter((product) => `${product.name} ${product.sku} ${product.category}`.toLowerCase().includes(posSearch.toLowerCase())).map((product) => <div className="pos-product-row" key={product.id}><span className="product-swatch">{product.name.slice(0, 1)}</span><div className="pos-product-info"><strong>{product.name}</strong><small>{product.sku} · {product.stock} in stock</small></div><strong>{money.format(product.price)}</strong><button className="row-action" title="Add to sale" aria-label={`Add ${product.name} to sale`} disabled={product.stock <= (cart[product.id] ?? 0)} onClick={() => setCart((current) => ({ ...current, [product.id]: (cart[product.id] ?? 0) + 1 }))}><Plus size={15} /></button></div>)}{products.length === 0 && <div className="empty-state">No products in the catalog.</div>}</div></div><div className="panel pos-checkout"><div className="panel-heading"><div><h2>Current sale</h2><p>{count} items</p></div><button className="text-link" onClick={() => setCart({})}>Clear sale</button></div><label>Customer<select value={saleCustomerId} onChange={(event) => { setSaleCustomerId(event.target.value); if (!event.target.value) setDiscountInput('') }}><option value="">Walk-in customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.firstName} {customer.lastName}</option>)}</select></label>{saleCustomerId && <label>Customer discount<input type="number" min="0" max={saleSubtotalCents / 100} step="0.01" value={discountInput} onChange={(event) => setDiscountInput(event.target.value)} placeholder="0.00" /></label>}<div className="pos-cart-list">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => { const product = products.find((item) => item.id === id); if (!product) return null; return <div className="pos-cart-row" key={id}><div><strong>{product.name}</strong><small>{quantity} × {money.format(product.price)}</small></div><strong>{money.format((product.price * quantity) * (1 + product.taxRate / 100))}</strong><div className="quantity-actions"><button className="row-action" aria-label={`Remove one ${product.name}`} onClick={() => setCart((current) => ({ ...current, [id]: quantity <= 1 ? 0 : quantity - 1 }))}>−</button><button className="row-action" aria-label={`Add one ${product.name}`} disabled={quantity >= product.stock} onClick={() => setCart((current) => ({ ...current, [id]: quantity + 1 }))}><Plus size={13} /></button></div></div>})}{count === 0 && <div className="empty-state">Search for a product to begin.</div>}</div><div className="pos-total"><span>Sale total</span><strong>{money.format(total)}</strong></div><div className="modal-row"><label>Amount received<input type="number" min="0" max={total} step="0.01" placeholder={total.toFixed(2)} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></label><label>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="gift_card">Gift card</option><option value="store_credit">Store credit</option><option value="other">Other</option></select></label></div><div className="pos-balance">Outstanding after payment <strong>{money.format(Math.max(0, total - (paymentAmount === '' ? total : Number(paymentAmount) || 0)))}</strong></div><button className="button button-primary pos-submit" disabled={!count || busy || (paymentAmount !== '' && (Number(paymentAmount) < 0 || Number(paymentAmount) > total))} onClick={checkout}>Complete sale · {money.format(total)} <ArrowUpRight size={15} /></button></div></section>}
+        {section === 'Sales' && posMode && <section className="pos-layout"><div className="panel pos-products"><div className="panel-heading"><div><h2>Find products</h2><p>Search by product name, SKU, or category.</p></div></div><label className="pos-search"><Search size={16} /><input autoFocus value={posSearch} onChange={(event) => setPosSearch(event.target.value)} placeholder="Search products to add" /></label><div className="pos-product-list">{posProducts.map((product) => <div className="pos-product-row" key={product.id}><span className="product-swatch">{product.name.slice(0, 1)}</span><div className="pos-product-info"><strong>{product.name}</strong><small>{product.sku} · {product.stock} in stock</small></div><strong>{money.format(product.price)}</strong><button className="row-action" title="Add to sale" aria-label={`Add ${product.name} to sale`} disabled={product.stock <= (cart[product.id] ?? 0)} onClick={() => setCart((current) => ({ ...current, [product.id]: (cart[product.id] ?? 0) + 1 }))}><Plus size={15} /></button></div>)}{posProducts.length === 0 && <div className="empty-state">No matching products.</div>}</div></div><div className="panel pos-checkout"><div className="panel-heading"><div><h2>Current sale</h2><p>{count} items</p></div><button className="text-link" onClick={() => setCart({})}>Clear sale</button></div><label>Customer<select value={saleCustomerId} onChange={(event) => { setSaleCustomerId(event.target.value); if (!event.target.value) setDiscountInput('') }}><option value="">Walk-in customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.firstName} {customer.lastName}</option>)}</select></label>{saleCustomerId && <label>Customer discount<input type="number" min="0" max={saleSubtotalCents / 100} step="0.01" value={discountInput} onChange={(event) => setDiscountInput(event.target.value)} placeholder="0.00" /></label>}<div className="pos-cart-list">{Object.entries(cart).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => { const product = products.find((item) => item.id === id); if (!product) return null; return <div className="pos-cart-row" key={id}><div><strong>{product.name}</strong><small>{quantity} × {money.format(product.price)}</small></div><strong>{money.format((product.price * quantity) * (1 + product.taxRate / 100))}</strong><div className="quantity-actions"><button className="row-action" aria-label={`Remove one ${product.name}`} onClick={() => setCart((current) => ({ ...current, [id]: quantity <= 1 ? 0 : quantity - 1 }))}>−</button><button className="row-action" aria-label={`Add one ${product.name}`} disabled={quantity >= product.stock} onClick={() => setCart((current) => ({ ...current, [id]: quantity + 1 }))}><Plus size={13} /></button></div></div>})}{count === 0 && <div className="empty-state">Search for a product to begin.</div>}</div><div className="pos-total"><span>Sale total</span><strong>{money.format(total)}</strong></div><div className="modal-row"><label>Amount received<input type="number" min="0" max={total} step="0.01" placeholder={total.toFixed(2)} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></label><label>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="gift_card">Gift card</option><option value="store_credit">Store credit</option><option value="other">Other</option></select></label></div><div className="pos-balance">Outstanding after payment <strong>{money.format(Math.max(0, total - (paymentAmount === '' ? total : Number(paymentAmount) || 0)))}</strong></div><button className="button button-primary pos-submit" disabled={!count || busy || (paymentAmount !== '' && (Number(paymentAmount) < 0 || Number(paymentAmount) > total))} onClick={checkout}>Complete sale · {money.format(total)} <ArrowUpRight size={15} /></button></div></section>}
         {section === 'Customers' && canAccessSection('Customers') && <section className="panel product-panel page-table-panel"><div className="table-toolbar"><strong>Customer balances <span className="nav-count">{customers.length}</span></strong><label className="global-search sales-search"><Search size={15} /><input value={customerQuery} onChange={(event) => setCustomerQuery(event.target.value)} placeholder="Search customers" aria-label="Search customers" /></label><strong>Pending total {money.format(customerPendingTotal)}</strong></div><div className="table-scroll"><table className="product-table"><thead><tr><th>NAME</th><th>PHONE</th><th>EMAIL</th><th>NOTES</th><th>AMOUNT PENDING</th>{can('customers.write') && <th />}</tr></thead><tbody>{filteredCustomers.map((customer) => <tr key={customer.id}><td><strong>{customer.firstName} {customer.lastName}</strong></td><td>{customer.phone || '—'}</td><td>{customer.email || '—'}</td><td>{customer.notes || '—'}</td><td className="price-cell">{money.format(customer.pendingAmount)}</td>{can('customers.write') && <td className="row-actions"><button className="row-action" title="Edit customer" aria-label={`Edit ${customer.firstName} ${customer.lastName}`} onClick={() => { setEditingCustomer(customer); setShowCustomerForm(true) }}><Pencil size={14} /></button><button className="row-action danger-action" title="Delete customer" aria-label={`Delete ${customer.firstName} ${customer.lastName}`} onClick={() => void removeCustomer(customer)}><Trash2 size={14} /></button></td>}</tr>)}</tbody></table>{filteredCustomers.length === 0 && <div className="empty-state"><Users size={19} />No matching customers.</div>}</div></section>}
         {section === 'Reports' && <section className="report-grid"><Report label="Net sales this month" value={money.format(dashboard?.monthlySales ?? 0)} trend="Month to date" icon={<ChartNoAxesCombined size={18} />} /><Report label="Sell-through rate" value="—" trend="Requires sales history" icon={<Boxes size={18} />} /><Report label="Returning customers" value="—" trend="Customer analytics unavailable" icon={<Users size={18} />} down /><div className="panel report-note"><h2>Report exports</h2><p>Download your product catalog in spreadsheet-friendly CSV format.</p><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export product report</button></div></section>}
         {section === 'Settings' && canAccessSection('Settings') && <form className="panel settings-panel" onSubmit={saveSettings}><div className="panel-heading"><div><h2>Store profile</h2><p>Business details used across receipts and reports.</p></div><button className="button button-primary" type="submit" disabled={busy}>Save changes</button></div><label>Store name<input value={settings.storeName} onChange={(event) => setSettings((current) => ({ ...current, storeName: event.target.value }))} required /></label><div className="settings-row"><label>Currency<select value={settings.currency} onChange={(event) => setSettings((current) => ({ ...current, currency: event.target.value }))}><option value="USD">USD · US Dollar</option><option value="EUR">EUR · Euro</option><option value="GBP">GBP · Pound Sterling</option><option value="PKR">PKR · Pakistani Rupee</option></select></label><label>Time zone<select value={settings.timezone} onChange={(event) => setSettings((current) => ({ ...current, timezone: event.target.value }))}><option value="UTC">UTC</option><option value="Asia/Karachi">Pakistan Standard Time · Asia/Karachi</option><option value="America/New_York">Eastern Time · New York</option><option value="America/Chicago">Central Time · Chicago</option><option value="America/Los_Angeles">Pacific Time · Los Angeles</option></select></label></div><hr /><div className="panel-heading"><div><h2>Checkout defaults</h2><p>Automatically attach this customer to sales unless another is selected.</p></div></div><label>Default customer<select value={settings.defaultCustomerId ?? ''} onChange={(event) => setSettings((current) => ({ ...current, defaultCustomerId: event.target.value || null }))}><option value="">No default customer · Walk-in</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.firstName} {customer.lastName}</option>)}</select></label><hr /><div className="panel-heading"><div><h2>Data & exports</h2><p>Keep a local copy of your product data.</p></div><button className="button button-secondary" type="button" onClick={exportCsv}><Download size={15} /> Export CSV</button></div></form>}

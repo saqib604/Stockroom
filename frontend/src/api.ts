@@ -121,18 +121,31 @@ export function getDashboardSummary(token: string) {
   return request<DashboardSummary>('/dashboard/summary', token)
 }
 
-export function listSales(token: string) {
-  return request<SaleRecord[]>('/sales', token)
+function withQuery(path: string, values: Record<string, string | undefined>) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(values)) {
+    if (value && value !== 'all') query.set(key, value)
+  }
+  const queryString = query.toString()
+  return queryString ? `${path}?${queryString}` : path
 }
 
-export async function listProducts(token: string): Promise<Product[]> {
-  const rows = await request<Array<Omit<Product, 'category'> & { category?: string | { name: string } | null }>>('/products', token)
+export function listSales(token: string, filters: { search?: string; paymentStatus?: string; date?: string } = {}) {
+  return request<SaleRecord[]>(withQuery('/sales', filters), token)
+}
+
+export async function listProducts(token: string, filters: { search?: string; stock?: string; category?: string } = {}): Promise<Product[]> {
+  const rows = await request<Array<Omit<Product, 'category'> & { category?: string | { name: string } | null }>>(withQuery('/products', filters), token)
   return rows.map(({ category, ...product }) => ({
     ...product,
     category: typeof category === 'string' ? category : category?.name ?? 'General',
     costPrice: Number(product.costPrice),
     taxRate: Number(product.taxRate),
   }))
+}
+
+export function listProductCategories(token: string) {
+  return request<string[]>('/products/categories', token)
 }
 
 export type ProductInput = Omit<Product, 'id' | 'stock'>
@@ -189,8 +202,8 @@ export function adjustStock(token: string, productId: string, delta: number, loc
   })
 }
 
-export function listCustomers(token: string) {
-  return request<Customer[]>('/customers', token)
+export function listCustomers(token: string, filters: { search?: string } = {}) {
+  return request<Customer[]>(withQuery('/customers', filters), token)
 }
 
 export function createCustomer(token: string, customer: Omit<Customer, 'id' | 'pendingAmount'>) {

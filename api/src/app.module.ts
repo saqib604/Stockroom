@@ -1,9 +1,9 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Inject, Module, NotFoundException, Param, Patch, Post, Req, UseGuards } from '@nestjs/common'
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Inject, Module, NotFoundException, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import { IsArray, IsBoolean, IsEmail, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Min, MinLength, NotEquals, ValidateNested, validateOrReject } from 'class-validator'
 import { plainToInstance, Type } from 'class-transformer'
 import { randomBytes } from 'node:crypto'
 import { hash } from 'bcryptjs'
-import { PaymentMethod } from '@prisma/client'
+import { PaymentMethod, Prisma } from '@prisma/client'
 import { AuthService, JwtGuard, Session } from './auth'
 import { PrismaService } from './prisma.service'
 
@@ -275,16 +275,44 @@ class DashboardController {
 @UseGuards(JwtGuard)
 class ProductsController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
-  @Get() async list(@Req() req: { user: Session }) {
+
+  @Get('categories') async categories(@Req() req: { user: Session }) {
     await requireAnyPermission(this.prisma, req.user, ['products.read', 'products.write', 'inventory.adjust'])
-    const rows = await this.prisma.product.findMany({ where: { storeId: BigInt(req.user.storeId), deletedAt: null }, include: { category: true, inventories: { where: { storeId: BigInt(req.user.storeId) } } }, orderBy: { name: 'asc' } })
-    return rows.map(({ inventories, costPrice, sellingPrice, category, ...product }) => {
+    const categories = await this.prisma.category.findMany({
+      where: { storeId: BigInt(req.user.storeId) },
+      orderBy: { name: 'asc' },
+      select: { name: true },
+    })
+    return categories.map(({ name }) => name)
+  }
+
+  @Get() async list(@Req() req: { user: Session }, @Query('search') search?: string, @Query('stock') stockFilter?: string, @Query('category') category?: string) {
+    await requireAnyPermission(this.prisma, req.user, ['products.read', 'products.write', 'inventory.adjust'])
+    if (stockFilter && !['all', 'in-stock', 'low-stock', 'out-of-stock'].includes(stockFilter)) throw new BadRequestException('Invalid stock filter')
+    const storeId = BigInt(req.user.storeId)
+    const searchTerm = search?.trim()
+    const rows = await this.prisma.product.findMany({
+      where: {
+        storeId,
+        deletedAt: null,
+        ...(category && category !== 'all' ? { category: { is: { name: category } } } : {}),
+        ...(searchTerm ? { OR: [
+          { name: { contains: searchTerm } },
+          { sku: { contains: searchTerm } },
+          { category: { is: { name: { contains: searchTerm } } } },
+        ] } : {}),
+      },
+      include: { category: true, inventories: { where: { storeId } } },
+      orderBy: { name: 'asc' },
+    })
+    const products = rows.map(({ inventories, costPrice, sellingPrice, category, ...product }) => {
       const inventory = inventories[0]
       const qtyDisplay = inventory?.qtyDisplay ?? 0
       const qtyWarehouse = inventory?.qtyWarehouse ?? 0
       const qtyHome = inventory?.qtyHome ?? 0
       return { ...product, id: product.id.toString(), storeId: product.storeId.toString(), categoryId: product.categoryId?.toString() ?? null, category: category?.name ?? null, price: Number(sellingPrice), costPrice: Number(costPrice), qtyDisplay, qtyWarehouse, qtyHome, stock: qtyDisplay + qtyWarehouse + qtyHome }
     })
+    return products.filter((product) => stockFilter === 'in-stock' ? product.stock > 8 : stockFilter === 'low-stock' ? product.stock > 0 && product.stock <= 8 : stockFilter === 'out-of-stock' ? product.stock === 0 : true)
   }
   @Post() async create(@Req() req: { user: Session }, @Body() body: unknown) {
     await requirePermission(this.prisma, req.user, 'products.write')
@@ -460,19 +488,43 @@ class SettingsController {
 class SalesController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
-  @Get() async list(@Req() req: { user: Session }) {
+  @Get() async list(@Req() req: { user: Session }, @Query('search') search?: string, @Query('paymentStatus') paymentStatus?: string, @Query('date') dateFilter?: string) {
     await requirePermission(this.prisma, req.user, 'sales.read')
+    if (paymentStatus && !['all', 'paid', 'partial', 'unpaid'].includes(paymentStatus)) throw new BadRequestException('Invalid payment status filter')
+    if (dateFilter && !['all', 'today', '7-days', '30-days'].includes(dateFilter)) throw new BadRequestException('Invalid sales date filter')
+    const storeId = BigInt(req.user.storeId)
+    const searchTerm = search?.trim()
+    const searchTerms = searchTerm?.split(/\s+/) ?? []
+    const saleWhere: Prisma.SaleWhereInput = {
+      storeId,
+      ...(searchTerm ? { OR: [
+        { receiptNumber: { contains: searchTerm } },
+        { customer: { is: { firstName: { contains: searchTerm } } } },
+        { customer: { is: { lastName: { contains: searchTerm } } } },
+        ...(searchTerms.length > 1 ? [{ customer: { is: { AND: [
+          { firstName: { contains: searchTerms[0] } },
+          { lastName: { contains: searchTerms.slice(1).join(' ') } },
+        ] } } }] : []),
+        ...(searchTerm.toLowerCase().includes('walk-in') ? [{ customer: { is: null } }] : []),
+      ] } : {}),
+    }
+    if (dateFilter && dateFilter !== 'all') {
+      const store = await this.prisma.store.findUniqueOrThrow({ where: { id: storeId }, select: { timezone: true } })
+      const [year, month, day] = dateKeyInZone(new Date(), store.timezone).split('-').map(Number)
+      const localDate = new Date(Date.UTC(year, month - 1, day))
+      const rangeDays = dateFilter === 'today' ? 1 : dateFilter === '7-days' ? 7 : 30
+      saleWhere.soldAt = { gte: startOfDayInZone(addCalendarDays(localDate, 1 - rangeDays), store.timezone) }
+    }
     const sales = await this.prisma.sale.findMany({
-      where: { storeId: BigInt(req.user.storeId) },
+      where: saleWhere,
       include: {
         customer: { select: { id: true, firstName: true, lastName: true } },
         items: { select: { nameSnapshot: true, skuSnapshot: true, quantity: true, lineTotal: true } },
         payments: { select: { amount: true, method: true, paidAt: true } },
       },
       orderBy: { soldAt: 'desc' },
-      take: 200,
     })
-    return sales.map((sale) => {
+    const results = sales.map((sale) => {
       const paidAmount = sale.payments.reduce((sum, payment) => sum + Number(payment.amount), 0)
       const totalAmount = Number(sale.totalAmount)
       const dueAmount = Math.max(0, Math.round((totalAmount - paidAmount) * 100) / 100)
@@ -491,6 +543,7 @@ class SalesController {
         payments: sale.payments.map((payment) => ({ ...payment, amount: Number(payment.amount) })),
       }
     })
+    return results.filter((sale) => !paymentStatus || paymentStatus === 'all' || sale.paymentStatus === paymentStatus)
   }
 
   @Post('checkout') async checkout(@Req() req: { user: Session }, @Body() body: unknown) {
@@ -583,10 +636,25 @@ class SalesController {
 class CustomersController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
-  @Get() async list(@Req() req: { user: Session }) {
+  @Get() async list(@Req() req: { user: Session }, @Query('search') search?: string) {
     await requireAnyPermission(this.prisma, req.user, ['customers.read', 'customers.write'])
+    const searchTerm = search?.trim()
+    const searchTerms = searchTerm?.split(/\s+/) ?? []
     const customers = await this.prisma.customer.findMany({
-      where: { storeId: BigInt(req.user.storeId), deletedAt: null },
+      where: {
+        storeId: BigInt(req.user.storeId),
+        deletedAt: null,
+        ...(searchTerm ? { OR: [
+          { firstName: { contains: searchTerm } },
+          { lastName: { contains: searchTerm } },
+          { email: { contains: searchTerm } },
+          { phone: { contains: searchTerm } },
+          ...(searchTerms.length > 1 ? [{ AND: [
+            { firstName: { contains: searchTerms[0] } },
+            { lastName: { contains: searchTerms.slice(1).join(' ') } },
+          ] }] : []),
+        ] } : {}),
+      },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
       include: { sales: { where: { status: 'completed' }, select: { totalAmount: true, payments: { select: { amount: true } } } } },
     })
